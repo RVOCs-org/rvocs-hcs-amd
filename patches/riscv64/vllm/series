@@ -1,0 +1,3 @@
+# vllm patch series (applied in order with git apply)
+# Exported from upstream commits with git format-patch; submodule gitlinks and .gitmodules are stripped
+7001-link-hip-targets-with-gnu-ld-bfd-work-around-lld-c.patch

@@ -1,0 +1,5 @@
+# pytorch patch series (applied in order with git apply)
+# Exported from upstream commits with git format-patch; submodule gitlinks and .gitmodules are stripped
+5001-riscv64-gfx1201-adaptations-for-pytorch-v2-13-0-th.patch
+5002-cmake-parameterize-libroctx64-dependency-via-rocm.patch
+5003-add-aten-c10-caffe2-hip-backend-sources-for-rocm-p.patch

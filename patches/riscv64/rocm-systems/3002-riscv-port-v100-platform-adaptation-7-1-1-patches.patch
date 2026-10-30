@@ -1,0 +1,377 @@
+From 1435a72cc359e1ddb7dd9b50797f93d40fc2be36 Mon Sep 17 00:00:00 2001
+From: riscv-port <riscv-port@local>
+Date: Sat, 12 Sep 2026 21:01:58 +0800
+Subject: [PATCH] riscv port: v100 platform adaptation (7.1.1 patches,
+ build.stale filtered)
+
+
+diff --git a/projects/clr/hipamd/src/hip_embed_pch.sh b/projects/clr/hipamd/src/hip_embed_pch.sh
+index b3756143d2c411b982ba3a85e1a33deeb1b87785..e9ff8d33a241980e5297e2f0a77f4c335beda823 100755
+--- a/projects/clr/hipamd/src/hip_embed_pch.sh
++++ b/projects/clr/hipamd/src/hip_embed_pch.sh
+@@ -63,6 +63,13 @@ else
+   tmpdir=/tmp
+ fi
+ 
++# RISC-V port: llvm-mc defaults to soft-float; emit host-matching double-float (lp64d) objects.
++if [[ "$(uname -m)" == riscv64 ]]; then
++  MC_RISCV_FLAGS=(-triple riscv64-unknown-linux-gnu -mattr=+m,+a,+f,+d,+c)
++else
++  MC_RISCV_FLAGS=()
++fi
++
+ # Expected first argument $1 to be output file name.
+ create_hip_macro_file() {
+ cat >$1 <<EOF
+@@ -142,7 +149,7 @@ EOF
+ 
+   $LLVM_DIR/bin/clang -cc1 -O3 -emit-pch -triple amdgcn-amd-amdhsa -aux-triple "$host_triple" -fcuda-is-device -std=c++17 -fgnuc-version=4.2.1 -o $tmp/hip_wave64.pch -x hip-cpp-output - <$tmp/pch_wave64.cui &&
+ 
+-  $LLVM_DIR/bin/llvm-mc -o hip_pch.o $tmp/hip_pch.mcin --filetype=obj &&
++  $LLVM_DIR/bin/llvm-mc "${MC_RISCV_FLAGS[@]}" -o hip_pch.o $tmp/hip_pch.mcin --filetype=obj &&
+ 
+   rm -rf $tmp
+ }
+@@ -189,7 +196,7 @@ EOF
+   set -x
+   $LLVM_DIR/bin/clang -O3 --hip-path=$HIP_INC_DIR/.. -std=c++14 -nogpulib --hip-version=4.4 -isystem $HIP_INC_DIR -isystem $HIP_BUILD_INC_DIR -isystem $HIP_AMD_INC_DIR --cuda-device-only -D__HIPCC_RTC__ -x hip $tmp/hipRTC_header.h -E -P -o $tmp/hiprtc &&
+   cat $macroFile >> $tmp/hiprtc &&
+-  $LLVM_DIR/bin/llvm-mc -o $tmp/hiprtc_header.o $tmp/hipRTC_header.mcin --filetype=obj &&
++  $LLVM_DIR/bin/llvm-mc "${MC_RISCV_FLAGS[@]}" -o $tmp/hiprtc_header.o $tmp/hipRTC_header.mcin --filetype=obj &&
+   $LLVM_DIR/bin/clang $tmp/hiprtc_header.o -o $rtc_shared_lib_out -shared &&
+   $LLVM_DIR/bin/clang -O3 --hip-path=$HIP_INC_DIR/.. -std=c++14 -nogpulib -nogpuinc -emit-llvm -c -o $tmp/tmp.bc --cuda-device-only -D__HIPCC_RTC__ --offload-arch=gfx906 -x hip-cpp-output $tmp/hiprtc &&
+   rm -rf $tmp
+diff --git a/projects/clr/hipamd/src/hip_graph_internal.cpp b/projects/clr/hipamd/src/hip_graph_internal.cpp
+index 9ae951248eda12fe4cd2139b28c6fdfdc6316867..1c7ae8d4ff5ae93ba6d1a63ce891e7c658de365e 100644
+--- a/projects/clr/hipamd/src/hip_graph_internal.cpp
++++ b/projects/clr/hipamd/src/hip_graph_internal.cpp
+@@ -6,6 +6,12 @@
+ 
+ #include "hip_graph_internal.hpp"
+ 
++#if defined(__riscv)
++// RISC-V port: x86 _mm_sfence/_mm_mfence intrinsics are unavailable; use a full barrier.
++static inline void _mm_sfence() { __sync_synchronize(); }
++static inline void _mm_mfence() { __sync_synchronize(); }
++#endif
++
+ #define CASE_STRING(X, C)                                                                          \
+   case X:                                                                                          \
+     case_string = #C;                                                                              \
+diff --git a/projects/clr/hipamd/src/hiprtc/CMakeLists.txt b/projects/clr/hipamd/src/hiprtc/CMakeLists.txt
+index c52efda8bfdd4ac8b92dcdf616e5aa608bc1f646..210e22c304de747b37b3a2a2dcece73d06b05ee6 100644
+--- a/projects/clr/hipamd/src/hiprtc/CMakeLists.txt
++++ b/projects/clr/hipamd/src/hiprtc/CMakeLists.txt
+@@ -137,6 +137,11 @@ endif()
+ # Requires clang and llvm-mc to create this library.
+ find_program(clang clang HINTS ${Clang_BIN} ${ENV_Clang_BIN} ${ROCM_PATH}/llvm/bin ${ROCM_PATH})
+ find_program(llvm-mc llvm-mc HINTS ${LLVM_BIN} ${ENV_LLVM_BIN} ${ROCM_PATH}/llvm/bin ${ROCM_PATH})
++if(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv")
++  set(_HIPRTC_MC_FLAGS "-triple" "riscv64-unknown-linux-gnu" "-mattr" "+m,+a,+f,+d,+c")
++else()
++  set(_HIPRTC_MC_FLAGS "")
++endif()
+ set(HIPRTC_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/hip_rtc_gen")
+ set(HIPRTC_GEN_HEADER "${HIPRTC_GEN_DIR}/hipRTC_header.h")
+ set(HIPRTC_GEN_MCIN "${HIPRTC_GEN_DIR}/hipRTC_header.mcin")
+@@ -203,7 +208,7 @@ add_custom_command(
+   DEPENDS ${clang} ${HIPRTC_GEN_HEADER})
+ add_custom_command(
+   OUTPUT ${HIPRTC_GEN_OBJ}
+-  COMMAND ${llvm-mc} -o ${HIPRTC_GEN_OBJ} ${HIPRTC_GEN_MCIN} --filetype=obj
++  COMMAND ${llvm-mc} ${_HIPRTC_MC_FLAGS} -o ${HIPRTC_GEN_OBJ} ${HIPRTC_GEN_MCIN} --filetype=obj
+   DEPENDS ${llvm-mc} ${HIPRTC_GEN_PREPROCESSED} ${HIPRTC_GEN_MCIN})
+ 
+ # Create hiprtc-builtins library.
+diff --git a/projects/clr/rocclr/device/rocm/rocvirtual.cpp b/projects/clr/rocclr/device/rocm/rocvirtual.cpp
+index 77afcab4d414b11ecc1005233921d462e3a7cf58..d11fe1b0d9129fa966db10e170a78e8a42998700 100644
+--- a/projects/clr/rocclr/device/rocm/rocvirtual.cpp
++++ b/projects/clr/rocclr/device/rocm/rocvirtual.cpp
+@@ -40,6 +40,21 @@
+ #include <cstdarg>
+ #include <mutex>
+ 
++<<<<<<< ours
++=======
++#if defined(__AVX__)
++#if defined(__MINGW64__)
++#include <intrin.h>
++#else
++#include <immintrin.h>
++#endif
++#endif
++#if defined(__riscv)
++// RISC-V port: x86 _mm_sfence/_mm_mfence intrinsics are unavailable; use a full barrier.
++static inline void _mm_sfence() { __sync_synchronize(); }
++static inline void _mm_mfence() { __sync_synchronize(); }
++#endif
++>>>>>>> theirs
+ 
+ /**
+  * HSA image object size in bytes (see HSA spec)
+diff --git a/projects/rocr-runtime/rocrtst/samples/CMakeLists.txt b/projects/rocr-runtime/rocrtst/samples/CMakeLists.txt
+index 135d0a7942f5fde5496fe69f7ac11d77689ce0e3..545f44c4b2edce4a216fc2da4119c57307a4f5f1 100755
+--- a/projects/rocr-runtime/rocrtst/samples/CMakeLists.txt
++++ b/projects/rocr-runtime/rocrtst/samples/CMakeLists.txt
+@@ -241,7 +241,9 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
+ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-braces")
+ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused")
+ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
+-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64")
++  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
++    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64")
++  endif()
+ 
+ #
+ # Add compiler flags to include symbol information for debug builds
+diff --git a/projects/rocr-runtime/runtime/hsa-ext-finalize/CMakeLists.txt b/projects/rocr-runtime/runtime/hsa-ext-finalize/CMakeLists.txt
+index f18b09912d635be1660bd51488b5241518e0bb27..bc36d765321e288de3d50ec660f64281b54457bf 100755
+--- a/projects/rocr-runtime/runtime/hsa-ext-finalize/CMakeLists.txt
++++ b/projects/rocr-runtime/runtime/hsa-ext-finalize/CMakeLists.txt
+@@ -118,9 +118,11 @@ set ( CMAKE_CXX_FLAGS "-std=c++11 " )
+ 
+ set ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -fexceptions -fno-rtti -fvisibility=hidden -Wno-error=sign-compare -Wno-sign-compare -Wno-write-strings -Wno-deprecated-declarations -Wno-conversion-null -fno-math-errno -fno-threadsafe-statics -fmerge-all-constants -fms-extensions -Wno-error=comment -Wno-comment -Wno-error=pointer-arith -Wno-pointer-arith -fPIC" )
+ 
+-if ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" )
++if ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64_SKIP_RISCV" )
++  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+     set  ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64  -msse -msse2" )
+-elseif ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86" )
++  endif()
++elseif ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_SKIP_RISCV" )
+     set ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32" )
+ endif ()
+ 
+diff --git a/projects/rocr-runtime/runtime/hsa-ext-image/CMakeLists.txt b/projects/rocr-runtime/runtime/hsa-ext-image/CMakeLists.txt
+index 6c286e3d069003ee61433caae8efc0cb5a636eb7..5b06cdc9309a5e3c2444aa9ef7130796aff0758b 100644
+--- a/projects/rocr-runtime/runtime/hsa-ext-image/CMakeLists.txt
++++ b/projects/rocr-runtime/runtime/hsa-ext-image/CMakeLists.txt
+@@ -65,9 +65,11 @@ set ( CMAKE_CXX_FLAGS "-std=c++11 " )
+ 
+ set ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -fexceptions -fno-rtti -fvisibility=hidden -Wno-error=sign-compare -Wno-sign-compare -Wno-write-strings -Wno-deprecated-declarations -Wno-conversion-null -fno-math-errno -fno-threadsafe-statics -fmerge-all-constants -fms-extensions -Wno-error=comment -Wno-comment -Wno-error=pointer-arith -Wno-pointer-arith -fPIC" )
+ 
+-if ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" )
++if ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64_SKIP_RISCV" )
++  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+     set  ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64  -msse -msse2" )
+-elseif ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86" )
++  endif()
++elseif ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_SKIP_RISCV" )
+     set ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32" )
+ endif ()
+ 
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime-tools/CMakeLists.txt b/projects/rocr-runtime/runtime/hsa-runtime-tools/CMakeLists.txt
+index 865de2fc4458bb78e193687b1fc2c52ee6ca87c6..08f792b2730e0dd5aa2b9ee6b21b8d0789b289b9 100755
+--- a/projects/rocr-runtime/runtime/hsa-runtime-tools/CMakeLists.txt
++++ b/projects/rocr-runtime/runtime/hsa-runtime-tools/CMakeLists.txt
+@@ -89,9 +89,11 @@ set ( CMAKE_CXX_FLAGS "-std=c++11 ")
+ 
+ set ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror=return-type -Werror -fexceptions -fno-rtti -fvisibility=hidden -Wno-error=sign-compare -Wno-error=enum-compare -Wno-sign-compare -Wno-write-strings -Wno-deprecated-declarations -Wno-conversion-null -fno-math-errno -fno-threadsafe-statics -fmerge-all-constants -fms-extensions -Wno-error=comment -Wno-comment -Wno-error=pointer-arith -Wno-pointer-arith -fPIC" )
+ 
+-if ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" )
++if ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64_SKIP_RISCV" )
++  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+     set ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64  -msse -msse2" )
+-elseif ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86" )
++  endif()
++elseif ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_SKIP_RISCV" )
+     set ( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32" )
+ endif ()
+ 
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/cmake_modules/hsa_common.cmake b/projects/rocr-runtime/runtime/hsa-runtime/cmake_modules/hsa_common.cmake
+index ec5edcfb81636b8c9c992a816b5fb4a6fe6d4ba8..faa5479c6ce25d8f5894ebefbd910c768bcf18ac 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/cmake_modules/hsa_common.cmake
++++ b/projects/rocr-runtime/runtime/hsa-runtime/cmake_modules/hsa_common.cmake
+@@ -57,9 +57,11 @@ if (CMAKE_COMPILER_IS_GNUCXX)
+   set(HSA_COMMON_CXX_FLAGS ${HSA_COMMON_CXX_FLAGS} "-Wl,--unresolved-symbols=ignore-in-shared-libs")
+ endif ()
+ set(HSA_COMMON_CXX_FLAGS ${HSA_COMMON_CXX_FLAGS} "-fno-strict-aliasing")
+-if ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+-  set( HSA_COMMON_CXX_FLAGS ${HSA_COMMON_CXX_FLAGS} "-m64"  "-msse" "-msse2")
+-elseif ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86" )
++if ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64_SKIP_RISCV")
++  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
++    set( HSA_COMMON_CXX_FLAGS ${HSA_COMMON_CXX_FLAGS} "-m64"  "-msse" "-msse2")
++  endif()
++elseif ( CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_SKIP_RISCV" )
+   set ( HSA_COMMON_CXX_FLAGS ${HSA_COMMON_CXX_FLAGS} "-m32")
+ endif ()
+ if ( "${CMAKE_BUILD_TYPE}" STREQUAL Debug )
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/inc/amd_gpu_agent.h b/projects/rocr-runtime/runtime/hsa-runtime/core/inc/amd_gpu_agent.h
+index a141d354c97ace265a4f3afa53b68d2a37cd30fc..360a97d894278bdda554ebb1dc3c6ef01767962f 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/inc/amd_gpu_agent.h
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/inc/amd_gpu_agent.h
+@@ -474,9 +474,9 @@ class GpuAgent : public GpuAgentInt {
+   /// @brief Force a WC flush on PCIe devices by doing a write and then read-back
+   __forceinline void PcieWcFlush(void *ptr, size_t size) const {
+     if (!xgmi_cpu_gpu_) {
+-      _mm_sfence();
++      __atomic_thread_fence(__ATOMIC_RELEASE);
+       *((uint8_t*)ptr + size - 1) = *((uint8_t*)ptr + size - 1);
+-      _mm_mfence();
++      __atomic_thread_fence(__ATOMIC_SEQ_CST);
+       auto readback = *(reinterpret_cast<volatile uint8_t*>(ptr) + size - 1);
+       UNUSED(readback);
+     }
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_aql_queue.cpp b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_aql_queue.cpp
+index 801327ed975c25b3904c8bb8f0c701dd78539a61..1eac36ea6acab95b08b3078a915e41df943d5bcb 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_aql_queue.cpp
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_aql_queue.cpp
+@@ -485,7 +485,7 @@ void AqlQueue::StoreRelaxed(hsa_signal_value_t value) {
+     HSAKMT_CALL(hsaKmtQueueRingDoorbell(queue_id_, value));
+   } else {
+     // Hardware doorbell supports AQL semantics.
+-    _mm_sfence();
++    __atomic_thread_fence(__ATOMIC_RELEASE);
+     *(signal_.hardware_doorbell_ptr) = uint64_t(value);
+     /* signal_ is allocated as uncached so we do not need read-back to flush WC */
+   }
+@@ -1717,7 +1717,7 @@ void AqlQueue::ExecutePM4(uint32_t* cmd_data, size_t cmd_size_b, hsa_fence_scope
+   memcpy(&queue_slot[1], &slot_data[1], slot_size_b - sizeof(uint32_t));
+   if (IsDeviceMemRingBuf() && needsPcieOrdering()) {
+     // Ensure the packet body is written as header may get reordered when writing over PCIE
+-    _mm_sfence();
++    __atomic_thread_fence(__ATOMIC_RELEASE);
+   }
+   atomic::Store(&queue_slot[0], slot_data[0], std::memory_order_release);
+ 
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_blit_kernel.cpp b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_blit_kernel.cpp
+index 94958c0cafd6c0735755fc1908adad78079b4733..f4fa9d793017ee92307cdef54dee9f2c872277c5 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_blit_kernel.cpp
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_blit_kernel.cpp
+@@ -919,7 +919,7 @@ void BlitKernel::PopulateQueue(uint64_t index, uint64_t code_handle, void* args,
+   std::atomic_thread_fence(std::memory_order_release);
+   if (queue_->IsDeviceMemRingBuf() && queue_->needsPcieOrdering()) {
+     // Ensure the packet body is written as header may get reordered when writing over PCIE
+-    _mm_sfence();
++    __atomic_thread_fence(__ATOMIC_RELEASE);
+   }
+ #if defined(__linux__)
+   __atomic_store_n(&(queue_buffer[index & queue_bitmask_].full_header),
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/intercept_queue.cpp b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/intercept_queue.cpp
+index 51dc02642a547a9e895798ff7f4bb83714bbaa1c..cfc1135541a93c9e90cc371c820d6ddc739b2010 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/intercept_queue.cpp
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/intercept_queue.cpp
+@@ -270,7 +270,7 @@ uint64_t InterceptQueue::Submit(const AqlPacket* packets, uint64_t count) {
+       ring[barrier & mask].barrier_and.completion_signal = Signal::Convert(retry_doorbell_);
+       if (wrapped->IsDeviceMemRingBuf() && needsPcieOrdering()) {
+         // Ensure the packet body is written as header may get reordered when writing over PCIE
+-        _mm_sfence();
++        __atomic_thread_fence(__ATOMIC_RELEASE);
+       }
+       // Release-publish the header, then ring the doorbell.
+       atomic::Store(&ring[barrier & mask].barrier_and.header, kBarrierHeader,
+@@ -314,7 +314,7 @@ uint64_t InterceptQueue::Submit(const AqlPacket* packets, uint64_t count) {
+       if (write_index != 0) {
+         if (wrapped->IsDeviceMemRingBuf() && needsPcieOrdering()) {
+           // Ensure the packet body is written as header may get reordered when writing over PCIE
+-          _mm_sfence();
++          __atomic_thread_fence(__ATOMIC_RELEASE);
+         }
+         atomic::Store(&ring[write & mask].packet.header, packets[first_written_packet_index].packet.header,
+                       std::memory_order_release);
+@@ -415,7 +415,7 @@ void InterceptQueue::StoreRelaxed(hsa_signal_value_t value) {
+ 
+     if (IsDeviceMemRingBuf() && needsPcieOrdering()) {
+       // Ensure the packet body is written as header may get reordered when writing over PCIE
+-      _mm_sfence();
++      __atomic_thread_fence(__ATOMIC_RELEASE);
+     }
+   }
+   i = next_packet_;
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/util/atomic_helpers.h b/projects/rocr-runtime/runtime/hsa-runtime/core/util/atomic_helpers.h
+index ecaa57a19be40e63b61f88f86b15a587f7769a85..53eac30ef43079e8ee39551d558940e272dd3365 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/util/atomic_helpers.h
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/util/atomic_helpers.h
+@@ -224,7 +224,7 @@ static __forceinline void PreFence(std::memory_order order) {
+     case std::memory_order_release:
+     case std::memory_order_seq_cst:
+     case std::memory_order_acq_rel:
+-      _mm_sfence();
++      __atomic_thread_fence(__ATOMIC_RELEASE);
+     default:;
+   }
+ #endif
+@@ -242,7 +242,7 @@ static __forceinline void PostFence(std::memory_order order) {
+ #elif X64_ORDER_WC
+   switch (order) {
+     case std::memory_order_seq_cst:
+-      return _mm_mfence();
++      return __atomic_thread_fence(__ATOMIC_SEQ_CST);
+     case std::memory_order_acq_rel:
+     case std::memory_order_acquire:
+       return _mm_lfence();
+@@ -258,11 +258,11 @@ static __forceinline void Fence(std::memory_order order=std::memory_order_seq_cs
+   switch (order) {
+     case std::memory_order_seq_cst:
+     case std::memory_order_acq_rel:
+-      return _mm_mfence();
++      return __atomic_thread_fence(__ATOMIC_SEQ_CST);
+     case std::memory_order_acquire:
+       return _mm_lfence();
+     case std::memory_order_release:
+-      return _mm_sfence();
++      return __atomic_thread_fence(__ATOMIC_RELEASE);
+     default:;
+   }
+ #else
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/util/lnx/os_linux.cpp b/projects/rocr-runtime/runtime/hsa-runtime/core/util/lnx/os_linux.cpp
+index 0cfde3ddfef5bd6d8f7b912ad9011b9de9e2b1e3..4f21a8bf2e55e8b187b6ad38690323edd4c42787 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/util/lnx/os_linux.cpp
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/util/lnx/os_linux.cpp
+@@ -69,7 +69,7 @@
+ #include <cpuid.h>
+ #endif
+ 
+-#ifdef __GLIBC__
++#if defined(__GLIBC__) && !defined(__riscv)
+ #define ABS_ADDR(base, ptr) (ptr)
+ #else
+ #define ABS_ADDR(base, ptr) ((base) + (ptr))
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/util/locks.h b/projects/rocr-runtime/runtime/hsa-runtime/core/util/locks.h
+index 133dd06f0b72710e0b7964761d5376c04cca5423..8f6b4ea150d37acc1731a67de1c8264ee34f94b2 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/util/locks.h
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/util/locks.h
+@@ -72,7 +72,7 @@ class HybridMutex {
+     while (!lock_.compare_exchange_strong(old, 1)) {
+       cnt--;
+       if (cnt > maxSpinIterPause) {
+-        _mm_pause();
++        (({asm volatile("nop" ::: "memory");}));
+       } else if (cnt-- > maxSpinIterYield) {
+         os::YieldThread();
+       } else {
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/util/utils.h b/projects/rocr-runtime/runtime/hsa-runtime/core/util/utils.h
+index f6b06d3a463d3cea8cc4ffde0061cd86aaa1a832..ab1b9bec55543dc3328377d8fb2cb388f99c5b30 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/util/utils.h
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/util/utils.h
+@@ -80,11 +80,20 @@ extern uint8_t log_flags[8];
+ typedef unsigned int uint;
+ typedef uint64_t uint64;
+ 
++<<<<<<< ours
+ // 2MB huge page size
+ #define GPU_HUGE_PAGE_SIZE (2 << 20)
+ 
+ // 4KB page size
+ #define DEFAULT_GPU_PAGE_SIZE (1 << 12)
++=======
++#if defined(__GNUC__)
++#if defined(__i386__) || defined(__x86_64__)
++#include <x86intrin.h>
++#elif defined(__riscv)
++/* RISC-V: no x86intrin.h */
++#endif
++>>>>>>> theirs
+ 
+ void log_printf(const char* file, int line, const char* format, ...);
+ 
+@@ -449,7 +458,7 @@ inline void FlushCpuCache(const void* base, size_t offset, size_t len) {
+   cur += offset;
+   uintptr_t lastline = (uintptr_t)(cur + len - 1) | (cacheline_size - 1);
+   do {
+-    _mm_clflush((const void*)cur);
++    __builtin___clear_cache((char*)cur, (char*)(cur + cacheline_size));
+     cur += cacheline_size;
+   } while (cur <= (const char*)lastline);
+ }

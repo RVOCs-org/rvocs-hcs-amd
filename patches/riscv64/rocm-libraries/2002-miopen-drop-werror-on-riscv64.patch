@@ -1,0 +1,13 @@
+diff --git a/projects/miopen/cmake/EnableCompilerWarnings.cmake b/projects/miopen/cmake/EnableCompilerWarnings.cmake
+index c83da3f84..410229af8 100644
+--- a/projects/miopen/cmake/EnableCompilerWarnings.cmake
++++ b/projects/miopen/cmake/EnableCompilerWarnings.cmake
+@@ -25,7 +25,7 @@
+ ################################################################################
+ 
+ set(__cxx_compile_options
+-    -Werror
++    # -Werror disabled for riscv64 (GCC15 <ciso646> #warning)
+     -Wall
+     -Wextra
+     # Additional warnings not included in -Wall/-Wextra

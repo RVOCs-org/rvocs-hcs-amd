@@ -1,0 +1,28 @@
+From e722ff4d4506cbc68034dda6f56f87c686437a9b Mon Sep 17 00:00:00 2001
+From: zhengguangchun <zhengguangchun@metastonecorp.com>
+Date: Sun, 20 Sep 2026 09:38:06 +0800
+Subject: [PATCH] compiler: enable NVPTX LLVM target; bump rocm-libraries
+ (hipSOLVER fix)
+
+- pre_hook_amd-llvm.cmake: append NVPTX to LLVM_TARGETS_TO_BUILD so
+  the amd-llvm build produces libLLVMNVPTX, required by triton's
+  NVIDIA backend at link time.
+- rocm-libraries: advance pin to 36e3b5405737f238939dca9659a88eb7dbc82a79 (riscv/10.0-port), which
+  carries the hipSOLVER LAPACK riscv64-aware GENERIC target fix.
+
+Verified on RISC-V 9700 (gfx1201): full TheRock 10.0 build; triton
+3.7.0 (LLVM23 port) and vLLM stack build and run with this tree.
+
+diff --git a/compiler/pre_hook_amd-llvm.cmake b/compiler/pre_hook_amd-llvm.cmake
+index b67432d00c4e118c8f78926a5513c3049a6afe74..95c12b2f1d7f2322e65bccda90319f88193f50b8 100644
+--- a/compiler/pre_hook_amd-llvm.cmake
++++ b/compiler/pre_hook_amd-llvm.cmake
+@@ -95,7 +95,7 @@ endif()
+ # we have never enabled benchmarks,
+ # disabling more explicitly after a bug fix enabled.
+ set(LLVM_INCLUDE_BENCHMARKS OFF)
+-set(LLVM_TARGETS_TO_BUILD "AMDGPU;Native;SPIRV" CACHE STRING "Enable LLVM Targets" FORCE)
++set(LLVM_TARGETS_TO_BUILD "AMDGPU;Native;SPIRV;NVPTX" CACHE STRING "Enable LLVM Targets" FORCE)
+ 
+ # Packaging.
+ set(PACKAGE_VENDOR "AMD" CACHE STRING "Vendor" FORCE)

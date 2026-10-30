@@ -1,0 +1,30 @@
+From 291d7042838737ac8f6a87e4118e884f23c37fa1 Mon Sep 17 00:00:00 2001
+From: zhengguangchun <zhengguangchun@metastonecorp.com>
+Date: Sun, 20 Sep 2026 09:58:41 +0800
+Subject: [PATCH] cmake: parameterize libroctx64 dependency via ROCM_PATH
+
+Caffe2_PUBLIC_HIP_DEPENDENCY_LIBS hardcoded an absolute host path to
+libroctx64.so from a previous build machine, breaking torch_hip
+linking on any other checkout. Reference it through ROCM_PATH, the
+canonical ROCm install root already used throughout Dependencies.cmake
+and resolved by cmake/public/LoadHIP.cmake (env ROCM_PATH, -DROCM_PATH,
+or rocm-sdk fallback).
+
+Verified on RISC-V 9700 (gfx1201): with ROCM_PATH pointing at the
+TheRock dist, cmake reconfigure reproduces byte-identical link inputs
+(link.txt) versus the previous absolute-path build; full torch wheel
+and vLLM stack built and ran end-to-end with this dependency.
+
+diff --git a/cmake/Dependencies.cmake b/cmake/Dependencies.cmake
+index c4d172e141ac554167b29f2e7be7a2aaadf8ba99..4d78b1d0d0a7df4248d939ca1e72fa12fbf5ac66 100644
+--- a/cmake/Dependencies.cmake
++++ b/cmake/Dependencies.cmake
+@@ -1097,7 +1097,7 @@ if(USE_ROCM)
+        $<INSTALL_INTERFACE:include> ${Caffe2_HIP_INCLUDE})
+ 
+     set(Caffe2_PUBLIC_HIP_DEPENDENCY_LIBS
+-      hip::host /home/ubuntu/work/GitlabLeo/TheRock/build/dist/rocm/lib/libroctx64.so hiprtc::hiprtc)
++      hip::host ${ROCM_PATH}/lib/libroctx64.so hiprtc::hiprtc)
+ 
+     # Math libraries
+     list(APPEND Caffe2_PUBLIC_HIP_DEPENDENCY_LIBS

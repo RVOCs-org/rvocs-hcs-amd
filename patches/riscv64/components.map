@@ -1,0 +1,21 @@
+# component          path                                       number prefix
+# ---------------------------------------------------------------------------
+# Path semantics:
+#   .            -> root of the TheRock source tree (upstream/therock)
+#   <path>       -> path relative to the TheRock tree (one of its submodules)
+#   src:<name>   -> framework-side source (work/src/<name>, see config/sources.sh)
+#
+# The number prefix determines the patch file name: <prefix><3-digit seq>-<name>.patch
+# ---------------------------------------------------------------------------
+therock             .                                          1
+rocm-libraries      rocm-libraries                             2
+rocm-systems        rocm-systems                               3
+composable-kernel   rocm-libraries/projects/composable_kernel  4
+pytorch             src:pytorch                                5
+triton              src:triton                                 6
+vllm                src:vllm                                   7
+amd-llvm            compiler/amd-llvm                          8
+
+# composable-kernel currently has no patches (hipBLASLt/CK are built for gfx120X
+# within the ml component set and upstream already supports that); the declaration
+# stays here so patches can be appended later.

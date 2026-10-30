@@ -1,0 +1,50 @@
+From c4144f5ae1587c95a83c433bc83e3c5a9133d1c8 Mon Sep 17 00:00:00 2001
+From: zhengguangchun <zhengguangchun@metastonecorp.com>
+Date: Sun, 20 Sep 2026 19:53:55 +0800
+Subject: [PATCH] [riscv64] rccl: guard x86 cpuid in init.cc; add __riscv arch
+ branch in xml.cc topo
+
+- init.cc: <cpuid.h>/__get_cpuid are x86-only; non-x86 falls back to ecx=0 (bare metal, no hypervisor bit). Fixes riscv64 build failure.
+- graph/xml.cc: ncclTopoGetXmlFromCpu arch dispatch is a compile-time #if chain (PPC/aarch64/x86_64); add __riscv -> arch=arm64 (valid kvDictCpuArch value). Fixes 'Attribute arch of node cpu not found' on riscv64.
+- Verified on riscv64 + gfx1201: build OK, nccl_available=True, single-rank allreduce OK (RCCL_ALLREDUCE_OK 1024.0).
+
+diff --git a/projects/rccl/src/graph/xml.cc b/projects/rccl/src/graph/xml.cc
+index 8355f59b9e6dd5bb110c69ccc5d9d8c263239999..d8e748acb46ad8e50b93c052ff50eb91dc4fdbfd 100644
+--- a/projects/rccl/src/graph/xml.cc
++++ b/projects/rccl/src/graph/xml.cc
+@@ -530,6 +530,8 @@ ncclResult_t ncclTopoGetXmlFromCpu(struct ncclXmlNode* cpuNode, struct ncclXml*
+     NCCLCHECK(xmlSetAttr(cpuNode, "arch", "arm64"));
+ #elif defined(__x86_64__)
+     NCCLCHECK(xmlSetAttr(cpuNode, "arch", "x86_64"));
++#elif defined(__riscv)
++    NCCLCHECK(xmlSetAttr(cpuNode, "arch", "arm64"));
+ #endif
+   }
+ 
+diff --git a/projects/rccl/src/init.cc b/projects/rccl/src/init.cc
+index 838227fd1d935ff632370ea11b7b4f9701a6aaf9..16732c2e9ea1eb7ef40246ac18df390448f19d32 100644
+--- a/projects/rccl/src/init.cc
++++ b/projects/rccl/src/init.cc
+@@ -78,7 +78,9 @@
+ #include "dda_all_reduce.h"
+ #include "ipc_init.h"
+ #include "fabric_init.h"
++#if defined(__x86_64__) || defined(__i386__)
+ #include <cpuid.h>
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include "kernel_config.h"
+@@ -296,8 +298,12 @@ static ncclResult_t ncclInit() {
+   }
+   INFO(NCCL_INIT, "Kernel version: %s", verStr);
+   if (strstr(verStr, "cray") == NULL) {
++#if defined(__x86_64__) || defined(__i386__)
+     unsigned int eax, ebx, ecx, edx;
+     if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) ecx = 0; // cpuid not supported
++#else
++    unsigned int ecx = 0; // non-x86: no cpuid, treat as bare metal (no hypervisor bit)
++#endif
+     NCCLCHECK(ncclTopoGetStrFromSys("/sys/devices/virtual/dmi/id", "bios_version", strValue));
+       // Check BIOS string and hypervisor presence on ecx bit 31
+     if (strncmp("Hyper-V UEFI Release", strValue, 20) != 0 && (ecx & (1u << 31)) == 0) {

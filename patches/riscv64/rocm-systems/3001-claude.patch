@@ -1,0 +1,340 @@
+From 8d3267503c37d81152286674e4412ac35f0abcb0 Mon Sep 17 00:00:00 2001
+From: chengli <chengli@metastonecorp.com>
+Date: Tue, 14 Jul 2026 15:15:44 +0800
+Subject: [PATCH] claude
+
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..d16ef5c2f7ad8d1e8938c7812e8c9ca9c3be251f
+--- /dev/null
++++ b/CLAUDE.md
+@@ -0,0 +1,145 @@
++# CLAUDE.md
++
++This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
++
++## Repository Overview
++
++ROCm Systems is a super-repo (monorepo) consolidating ~28 ROCm systems projects that were previously separate GitHub repositories. Each project under `projects/` builds independently and is released as a distinct package. The `shared/` directory contains cross-project dependencies that don't produce their own packages.
++
++## Repository Structure
++
++```
++projects/          # Individual ROCm projects (each was formerly its own repo)
++  amdsmi/          # AMD System Management Interface library
++  aqlprofile/      # AQL profiler
++  clr/             # Compute Language Runtime (OpenCL + HIP runtime)
++  hip/             # HIP runtime
++  hipfile/         # HIP file I/O library
++  hip-tests/       # HIP test suite
++  rccl/            # ROCm Collective Communications Library
++  rdc/             # ROCm Data Center tool
++  rocdecode/       # Video decode library
++  rocjpeg/         # JPEG decode library
++  rocprofiler/     # ROCm profiler (legacy)
++  rocprofiler-compute/   # ROCm compute profiler (Python-based, uses Ruff)
++  rocprofiler-register/  # Profiler registration library
++  rocprofiler-sdk/       # Profiler SDK (C/C++)
++  rocprofiler-systems/   # CPU/GPU application tracing with binary instrumentation
++  rocr-runtime/          # ROCr runtime (HSA)
++  roctracer/             # ROCm tracer
++  ...
++shared/            # Cross-project shared code
++  ctest/           # Shared CTest integration (YAML-based test categorization)
++  kpack/           # Kernel packing utilities
++emulation/         # Emulation projects (rocjitsu)
++experimental/      # Experimental projects (perf-dkms, perfxpert)
++test/therock/      # TheRock integration tests
++python/            # Python utilities (rocm-bootstrap)
++```
++
++## Build System
++
++Each project has its own CMakeLists.txt and builds independently. There is **no top-level CMakeLists.txt**. Build a project by entering its directory:
++
++```bash
++cd projects/<project-name>
++cmake -B build -DCMAKE_CXX_COMPILER=amdclang++ .
++cmake --build build --parallel
++```
++
++Some projects may require additional CMake flags (e.g., `-DROCM_PATH=/opt/rocm`). Check each project's CMakeLists.txt for available options.
++
++### Version
++
++Project versions are typically defined in a `VERSION` file in the project root (e.g., `projects/rocprofiler-sdk/VERSION`) and extracted by CMake.
++
++## Testing
++
++Tests use **CTest** and/or **Google Test**. Build with tests enabled, then run:
++
++```bash
++# Run all tests
++ctest --test-dir build
++
++# Run with verbose output
++ctest --test-dir build -V
++
++# Run tests matching a label or name
++ctest --test-dir build -R <test_name_pattern>
++ctest --test-dir build -L <label>
++```
++
++### Test Categories (shared/ctest)
++
++Projects using the shared test category system define `test_categories.yaml` with tiered labels: `quick` → `standard` → `comprehensive` → `full`. Tests in lower tiers inherit labels from higher tiers, so `ctest -L standard` includes all `quick` tests too.
++
++```bash
++ctest --test-dir build -L quick          # Fast sanity checks
++ctest --test-dir build -L standard       # PR-level tests
++ctest --test-dir build -LE quick_exclude # Exclude specific tests
++```
++
++## Formatting and Linting
++
++### Pre-commit (recommended)
++
++```bash
++pip install pre-commit
++pre-commit install
++```
++
++The root `.pre-commit-config.yaml` enforces:
++- **clang-format** (v18.1.4 mirror) for C/C++ — uses `-style=file`, so each project's `.clang-format` is respected
++- **black** (v22.10.0) for Python
++- **gersemi** for CMake formatting
++- **trailing-whitespace**, **end-of-file-fixer**, **check-yaml**, **check-added-large-files**
++
++Some projects have their own `.pre-commit-config.yaml` (amdsmi, rdc, rocm-smi-lib, rocprofiler-systems) and are excluded from the root config.
++
++### C++ Formatting
++
++Each project has its own `.clang-format`. Common settings: 4-space indent, left-aligned pointers, brace wrapping after control statements, column limit 90-100.
++
++### Python Formatting
++
++- Most projects use **black**
++- **rocprofiler-compute** uses **Ruff** (see `.ai/rules/` in that project)
++
++### CMake Formatting
++
++- **gersemi** is the standard CMake formatter (replaces cmake-format)
++
++## Git Workflow
++
++- **Default branch**: `develop`
++- **PRs target `develop`** (trunk-based development)
++- **Branch naming**: `users/<github-username>/<branch-name>`
++- **Sync**: `git fetch origin && git rebase origin/develop` (avoid merge)
++- **CODEOWNERS**: `.github/CODEOWNERS` at root; some projects have their own
++- **git blame**: Run `git config blame.ignoreRevsFile .git-blame-ignore-revs` to hide formatting-only commits
++
++## Sparse Checkout
++
++For working on specific projects without cloning everything:
++
++```bash
++git clone --no-checkout --filter=blob:none https://github.com/ROCm/rocm-systems.git
++cd rocm-systems
++git sparse-checkout init --cone
++git sparse-checkout set projects/rocprofiler-sdk shared/ctest
++git checkout develop
++```
++
++## CI
++
++- **GitHub Actions**: `.github/workflows/` — per-project workflows (build, formatting, Python linting, code coverage, CodeQL)
++- **Azure Pipelines**: External CI dispatched via `Dispatch Azure CI` action; builds on Ubuntu 22.04 for gfx942/gfx90a
++- **TheRock CI**: Build system integration tests in `test/therock/`
++- PR auto-labeling via `.github/labeler.yml` and CODEOWNERS
++
++## Project-Specific Notes
++
++Several projects have their own `CLAUDE.md` or `AGENTS.md` files with project-specific guidance:
++- `projects/amdsmi/CLAUDE.md` — API cascade rules, auto-generated wrapper warnings
++- `projects/hipfile/CLAUDE.md` — build and Python bindings instructions
++- `projects/rocprofiler-compute/AGENTS.md` — Python style, Ruff, PR workflow rules
+diff --git a/architecture.md b/architecture.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..f316c481d88a0f95ed5047cdb50f67e459f290fb
+--- /dev/null
++++ b/architecture.md
+@@ -0,0 +1,177 @@
++# ROCm Systems 架构认知
++
++> 本文档基于分支 `leo/dev-rocm7.1.1` 的 sparse-checkout 工作树编写。
++> 同步存于 `~/.claude/projects/-home-cl-workspace-code-rocm-systems/memory/`。
++
++## 0. 仓库本质与一个重要差异
++
++这是 **ROCm Systems 超级仓库（monorepo）的一个 sparse-checkout 子集**。CLAUDE.md 描述的约 28 个项目里，本分支实际 checkout 的只有 16 个；`rccl / amdsmi / rocdecode / rocjpeg / hipfile / rocshmem` 这些 README/CLAUDE.md 列出但**当前工作树里没有**。
++
++每个 `projects/<name>/` 是一个**独立可发布的 ROCm 组件**，有自己的 CMakeLists.txt 和版本，无顶层 CMakeLists.txt，靠 git submodules 拉取第三方依赖（根 `.gitmodules`：perfetto, googletest, glog, fmt, json, yaml-cpp, sqlite, pybind11, gotcha, dyninst, timemory, papi, PTL, cereal, elfio 等）。
++
++实际 checkout 的 16 个项目：
++```
++aqlprofile  clr  hip  hipother  hip-tests  rdc  rocm-core  rocminfo
++rocm-smi-lib  rocprofiler  rocprofiler-compute  rocprofiler-register
++rocprofiler-sdk  rocprofiler-systems  rocr-runtime  roctracer
++```
++
++`shared/` 当前只含 `amdgpu-windows-interop/`（Windows PAL/SC/HSAIL 相关）；CLAUDE.md 提到的 `shared/ctest`、`shared/kpack` 在本分支未 checkout。
++
++## 1. 分层架构（从硬件向上）
++
++```
++┌──────────────────────────────────────────────────────────────┐
++│  应用层：PyTorch / vLLM / TGI / TensorFlow 等推理/训练框架     │
++└────────────────────────────┬─────────────────────────────────┘
++                             │ 调用
++┌────────────────────────────▼─────────────────────────────────┐
++│ L4  HIP API 头    projects/hip/include/hip/*.h                │
++│     (CUDA-like C++ 运行时 API + kernel 语言)                  │
++│     hip_runtime_api.h / hip_runtime.h / hip_fp16.h /          │
++│     hip_bf16.h / hip_fp8.h / hiprtc.h / hip_cooperative_groups│
++└────────────────────────────┬─────────────────────────────────┘
++                             │ 实现
++┌────────────────────────────▼─────────────────────────────────┐
++│ L3  Compute Language Runtime  projects/clr/                   │
++│   ├── hipamd/    HIP 在 AMD GPU 上的实现（hip_foo.cpp）       │
++│   ├── rocclr/    VDI 虚拟设备接口（跨平台抽象层）              │
++│   └── opencl/    OpenCL 实现                                  │
++└────────────────────────────┬─────────────────────────────────┘
++                             │ 调用
++┌────────────────────────────▼─────────────────────────────────┐
++│ L2  HSA Runtime   projects/rocr-runtime/runtime/hsa-runtime/  │
++│   用户态薄层 API，inc/hsa.h 是公开 API                       │
++│   能力：agent 枚举 / 信号同步 / AQL 队列 / 内存管理 / dispatch│
++└────────────────────────────┬─────────────────────────────────┘
++                             │ ioctl
++┌────────────────────────────▼─────────────────────────────────┐
++│ L1  Thunk + Profiling HW 接口                                │
++│   projects/rocr-runtime/libhsakmt  (libhsakmt → ROCk 驱动)   │
++│   projects/aqlprofile              (AQL profile packets)     │
++└────────────────────────────┬─────────────────────────────────┘
++                             │
++┌────────────────────────────▼─────────────────────────────────┐
++│ L0  amdgpu / ROCk 内核驱动（不在本仓库）                      │
++└──────────────────────────────────────────────────────────────┘
++```
++
++旁路系统：**工具与监控**独立于运行时栈，通过 hook 机制接入。
++
++## 2. 关键模块核心功能
++
++### 运行时栈（推理必经路径）
++
++| 模块 | 路径 | 核心功能 |
++|------|------|---------|
++| **rocm-core** | `projects/rocm-core` | 元包，发布版本号、安装路径、Lmod module 文件。所有 ROCm 包都依赖它做"一键卸载"。 |
++| **rocr-runtime** | `projects/rocr-runtime` | 两件事合一：① `runtime/hsa-runtime/` — HSA Runtime 用户态 API（`inc/hsa.h`）；② `libhsakmt/` — Thunk 库直通 ROCk 内核驱动。提供 agent 枚举、AQL 队列、信号、内存管理。 |
++| **clr** | `projects/clr` | 三合一：`hipamd/` HIP AMD 后端、`rocclr/` VDI 跨平台抽象、`opencl/` OpenCL。**hipamd/src/hip_*.cpp** 是 HIP API 的真正实现。 |
++| **hip** | `projects/hip` | 纯头文件层 + 工具链配置（`hip-lang-config.cmake.in`）。`include/hip/` 下是推理框架实际 `#include` 的头：`hip_runtime_api.h`、`hip_bf16.h`(bf16 算子)、`hip_fp8.h`(FP8)、`hiprtc.h`(运行时编译)。 |
++| **hipother** | `projects/hipother` | 非-AMD 后端的 HIP 支持文件（如 NVIDIA 后端兼容层）。 |
++| **hip-tests** | `projects/hip-tests` | HIP 单元测试套。 |
++| **rocminfo** | `projects/rocminfo` | 单二进制 `rocminfo.cc`，报告 GPU 拓扑、ISA（gfx940/gfx942/gfx950…）、内存、CU 数。推理部署时确认硬件用。 |
++
++### 工具与剖析栈（现代 → 遗产）
++
++| 模块 | 路径 | 角色 |
++|------|------|------|
++| **rocprofiler-sdk** | `projects/rocprofiler-sdk` | **现代剖析基础设施**（取代下面三个）。公开头在 `source/include/rocprofiler-sdk/`：`rocprofiler.h` 主入口、`counters.h`、`buffer_tracing.h`、`callback_tracing.h`、`pc_sampling.h`、`marker.h`(ROCtx region)、`hip/`、`hsa/`、`rccl/`、`rocjpeg/`、`rocdecode/` 子域。命令行工具是 `rocprofv3`（`source/bin/rocprofv3.py`）。 |
++| **rocprofiler-register** | `projects/rocprofiler-register` | **工具装载器**。运行时（HIP/HSA）初始化时构造的"拦截 API 表"会交给它；它扫描符号表找 `rocprofiler_configure`，自动 dlopen 剖析库。不再用环境变量注入工具。 |
++| **rocprofiler-systems** | `projects/rocprofiler-systems` | 原 Omnitrace。**CPU+GPU 全系统剖析**：二进制插桩（dyninst）、采样、因果剖析、Perfetto 可视化。剖析 PyTorch 推理瓶颈的主力工具。 |
++| **rocprofiler-compute** | `projects/rocprofiler-compute` | Python 写的"roofline / 指标剖析"，针对 MI100/MI200/MI300 ML/HPC 工作负载（用 Ruff，不是 black）。 |
++| **aqlprofile** | `projects/aqlprofile` | HSA AQL 扩展的底层实现：构造 profile AQL 包、PM4 命令、SQTT 线程追踪。`rocprofiler-sdk` 调用它下到硬件。支持 GFX9/10/11/12。 |
++| **rocprofiler** (v1/v2) | `projects/rocprofiler` | 遗产剖析器，ROCm 7.0 后 9 个月 EOL。 |
++| **roctracer** | `projects/roctracer` | 遗产通用 callback/activity 追踪 + ROC-TX 注解（`roctxMark`/`roctxRangePush`）。同样在退役。 |
++
++### 系统管理
++
++| 模块 | 路径 | 角色 |
++|------|------|------|
++| **rocm-smi-lib** | `projects/rocm-smi-lib` | **已进维护模式**（README 自述）。`include/rocm_smi/rocm_smi.h` 提供温度、功耗、时钟、显存监控；`rsmi_init/rsmi_shut_down`。ROCm 7.0+ 推荐切到 `amdsmi`（本 checkout 没有）。 |
++| **rdc** | `projects/rdc` | ROCm Data Center Tool。集群级 GPU 遥测、作业统计、gRPC 服务、第三方集成。 |
++
++### 共享层
++
++`shared/` 当前只有 `amdgpu-windows-interop/`（Windows 上 PAL/SC/HSAIL 编译器相关，非 Linux 推理路径）。CLAUDE.md 提到的 `shared/ctest`、`shared/kpack` 在本分支未 checkout。
++
++## 3. 模块调用关系（运行时栈）
++
++**应用 dispatch 一个 kernel 的下行路径：**
++```
++app: hipLaunchKernel(...)                  [projects/hip/include/hip/]
++  └─> hipamd::hipLaunchKernel               [projects/clr/hipamd/src/hip_kernel.cpp]
++      └─> rocclr VDI: Kernel::dispatch       [projects/clr/rocclr/]
++          └─> hsa_queue_add_indexed /        [projects/rocr-runtime/.../hsa.h]
++              hsa_signal_create                构造 AQL packet 入队
++              └─> libhsakmt thunk ioctl       [projects/rocr-runtime/libhsakmt/]
++                  └─> amdgpu/ROCk driver      (内核)
++```
++
++**剖析工具接入路径（旁路）：**
++```
++app 启动
++  └─> HIP/HSA 运行时初始化，构造 intercept API table
++      └─> rocprofiler-register 接收 table
++          ├─ 扫描到 ROCP_TOOL_LIBRARIES 或 rocprofiler_configure 符号
++          └─> dlopen 工具库（如 rocprofiler-sdk）
++              └─> 工具注册 callback、buffer tracing、counter 收集
++                  └─> aqlprofile 构造 PMU/SQTT 的 AQL 包下到硬件
++```
++
++**剖析工具自身依赖：**
++- `rocprofiler-sdk` → 依赖 `aqlprofile`（下到硬件）+ 内置 GOTCHA（拦截任意动态库符号）
++- `rocprofiler-systems` → 依赖 `dyninst`（二进制插桩）+ `timemory` + `perfetto` + `papi`
++- `rocprofiler-compute`（Python）→ 通过 `rocprofiler-sdk` / `rocprofv3` 获取数据
++
++## 4. 推理场景中提供的核心功能
++
++ROCm Systems 仓库本身**只提供运行时 + 工具 + 监控**，**不包含**数学库（MIOpen、hipBLAS、Composable Kernel、RCCL）——这些在 ROCm 其他仓库。本仓库在 LLM/推理链路里的职责：
++
++| 推理需求 | 提供它的模块 | 关键 API/入口 |
++|---------|------------|-------------|
++| **执行 kernel**（GEMM/attention 的 launch） | hip + clr/hipamd + rocr-runtime | `hipModuleLaunchKernel`、`hipLaunchKernel`；最终走 HSA AQL dispatch |
++| **bf16 / fp16 / fp8 数据类型** | hip | `projects/hip/include/hip/hip_bf16.h`、`hip_fp16.h`、`hip_fp8.h`、`hip_fp4.h`、`hip_fp6.h` |
++| **运行时编译 kernel**（FlashAttention/MoE 融合算子） | hip | `hiprtc.h`（HIP RTC） |
++| **多 GPU 并行**（TP/PP） | 本仓库**不提供** RCCL（本分支未 checkout），RCCL 在 ROCm/rccl 独立仓库 |
++| **设备发现**（确认 MI300X/MI325X） | rocminfo | `rocminfo` 二进制，输出 ISA / 拓扑 |
++| **显存/温度/功耗监控** | rocm-smi-lib（维护中，新代码用 amdsmi） | `rsmi_dev_power_ave_get`、`rsmi_dev_temp_metric_get` 等 |
++| **KV cache / 大显存分配** | rocr-runtime | HSA fine-grained / coarse-grained 内存区域；`hipMalloc` 走到这 |
++| **性能剖析**（找 attention/MLP 瓶颈） | rocprofiler-sdk + rocprofiler-systems | `rocprofv3` CLI；`rocprofiler-systems` 做 PyTorch 全栈 CPU+GPU trace |
++| **算子 roofline / 利用率分析** | rocprofiler-compute | Python `omniperf` 入口 |
++| **代码 region 标注** | roctracer(ROC-TX) | `rotxRangePush/Pop`（新代码用 rocprofiler-sdk 的 marker.h） |
++| **集群运维** | rdc | gRPC 服务，作业级 GPU 遥测 |
++
++## 5. 几条要记住的工程约定
++
++- **现代 vs 遗产剖析栈**：ROCm 7.x 后只维护 `rocprofiler-sdk` + `rocprofv3`；`rocprofiler`(v1/v2) + `roctracer` 已宣布 Q1 2026 EOL。**新代码不要用旧栈**。
++- **HIP API 是 CUDA-like 的**：绝大多数 `cudaXxx` → `hipXxx` 一一对应。PyTorch 的 `torch.cuda.*` 在 ROCm 上宏替换为 `hipXxx`。
++- **hip 仓库已退役**：源已迁到 `projects/hip/`、`projects/clr/`、`projects/hip-tests/`。CLAUDE.md 里的 hip 仓库链接是旧镜像。
++- **hipother**：处理非-AMD 后端（让 HIP 也能跑在 NVIDIA 上）。
++- **构建单元**：进入 `projects/<name>` 各自 `cmake -B build . && cmake --build build`，无顶层构建。
++- **格式化**：根 `.pre-commit-config.yaml`，clang-format v18.1.4 (C/C++)、black (Python，但 rocprofiler-compute 用 Ruff)、gersemi (CMake)。
++- **Git 工作流**：默认分支 `develop`，PR 目标 `develop`（trunk-based）；分支命名 `users/<gh-user>/<name>`；`git fetch origin && git rebase origin/develop` 同步。
++
++## 6. 关键路径速查表
++
++### rocprofiler-sdk 公开头
++路径：`projects/rocprofiler-sdk/source/include/rocprofiler-sdk/`（注意是 `source/include` 不是顶层 `include`）
++- 主入口：`rocprofiler.h`
++- 子域：`counters.h` / `buffer_tracing.h` / `callback_tracing.h` / `pc_sampling.h` / `marker.h` / `hip/` / `hsa/` / `rccl/` / `rocjpeg/` / `rocdecode/` / `kfd/` / `ompt/`
++- CLI：`projects/rocprofiler-sdk/source/bin/rocprofv3.py`、`rocprofv3-avail.py`、`rocpd.py`(输出解析)
++- 库源码：`projects/rocprofiler-sdk/source/lib/rocprofiler-sdk/`（agent/buffer/context/counters/hip/hsa/intercept_table 等 .cpp）
++
++### HSA Runtime 公开头
++- 主 API：`projects/rocr-runtime/runtime/hsa-runtime/inc/hsa.h`
++- AMD 扩展：`hsa_ext_amd.h`、`hsa_ext_finalize.h`、`hsa_ext_image.h`、`hsa_ven_amd_aqlprofile.h`、`hsa_ven_amd_pc_sampling.h`、`hsa_api_trace.h`、`hsa_amd_tool.h`、`hsa_ven_amd_loader.h`
++- 内部头：`runtime/hsa-runtime/core/inc/`（hsa_internal.h、hsa_table_interface.h、hsa_api_trace_int.h 等）
++
++### HIP 公开头
++全部在 `projects/hip/include/hip/`：
++`hip_runtime.h`、`hip_runtime_api.h`、`hip_bf16.h`、`hip_bfloat16.h`、`hip_fp16.h`、`hip_fp8.h`、`hip_fp4.h`、`hip_fp6.h`、`hiprtc.h`、`hip_cooperative_groups.h`、`hip_complex.h`、`hip_vector_types.h`、`math_functions.h`、`device_functions.h`、`channel_descriptor.h`、`driver_types.h`、`library_types.h`、`linker_types.h`、`texture_types.h`、`surface_types.h`、`hip_gl_interop.h`、`hip_profile.h`、`hip_deprecated.h`、`hip_math_constants.h`
++
++### hipamd 实现源码
++`projects/clr/hipamd/src/`：`hip_kernel.cpp`、`hip_device.cpp`、`hip_memory.cpp`、`hip_stream.cpp`、`hip_event.cpp`、`hip_module.cpp`、`hip_code_object.cpp`、`hip_context.cpp`、`hip_error.cpp`、`hip_api_trace.cpp`、`hip_activity.cpp`、`hip_device_runtime.cpp`、`amd_hsa_elf.hpp`、`hip_comgr_helper.cpp` 等。
++
++### aqlprofile 源码
++`projects/aqlprofile/src/`：`core`、`def`、`pm4`、`util`；`gfxip/` 是各 GFX 架构寄存器编程。

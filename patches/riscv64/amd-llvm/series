@@ -1,0 +1,3 @@
+# amd-llvm patch series (applied in order with git apply)
+# Exported from upstream commits with git format-patch; submodule gitlinks and .gitmodules are stripped
+8001-ompt-weak-no-op-fallbacks-for-device-tracing-hooks.patch

@@ -1,0 +1,384 @@
+From bc122ac03b93c4fc419b8c97e1f0ce192de11f36 Mon Sep 17 00:00:00 2001
+From: zhengguangchun <zhengguangchun@metastonecorp.com>
+Date: Thu, 17 Sep 2026 15:31:24 +0800
+Subject: [PATCH] pins: amd-llvm +1 OMPT riscv64 weak fallbacks (fix #9),
+ rocm-systems +1 kpack riscv64 ELF; +build log v9-v22
+
+amd-llvm 9f8c0bcff4439f64e0136dbb6fc7ce3b027316bf -> 667e790e40497c01395dcbb72f479db39f468801
+
+rocm-systems c4834e76455d71d926eb29dd08e3f9a435ef6b6a -> fe3a9f962652afc2acb51fffc991748756b1bd46
+
+Audit leak recovery 2026-09-17: two riscv64 build fixes existed only in the build workspace; now committed and cascaded into pins.
+
+diff --git a/TheRock10.0-9700-Riscv-build.md b/TheRock10.0-9700-Riscv-build.md
+index 79ead07c375d65b08cc189bc0169e6481cd0ca79..a0dd173a72cf8f17885bc420d9bee04ef8d61c7e 100644
+--- a/TheRock10.0-9700-Riscv-build.md
++++ b/TheRock10.0-9700-Riscv-build.md
+@@ -628,3 +628,367 @@ vllm bench throughput --model /models/Qwen3.5-9B --skip-mm-profiling \
+ | Python venv | /home/ubuntu/work/GitlabLeo/venv-torch | torch/triton/vllm/amdsmi/torchvision 全部装入 |
+ | wheel 产物 | /home/ubuntu/work/GitlabLeo/wheelhouse/ | torch 311MB + torchvision 1.2MB |
+ | 日志 | /home/ubuntu/work/GitlabLeo/{p2-torch-build,p4-vllm-build,p5-bench}.log | — |
++
++## 13.7 M4 收尾：提交 / tag / 补丁资产清单（2026-09-15 00:20）
++
++**本地提交（分支均未推送，身份 rv-rocm@local 为仓库级配置）**：
++
++| 仓库 | 分支 | HEAD | 内容 |
++|---|---|---|---|
++| TheRock | riscv/10.0-port | **3c5036121** | 7a5f100fc（quadmath/proftools/BLAS/profiler/primlibs 修复 + 日志 + amd-llvm 子仓指针）+ 3c5036121（therock_amdsmi_deferred.cmake，被 primlibs deps CMake L27 include） |
++| TheRock/compiler/amd-llvm | riscv/10.0-port | **9f8c0bcff443** | §11.2 遗留清理：7 个 warn-unsafe-buffer-usage 测试文件头部冲突标记，统一取 991d7848b740（fork restore 意图）侧，标记归零 |
++| PyTorch | riscv/2.13.0-port | **d382e57cdc7** | v2.13.0 全量适配差（134 文件，+944/-914）：torch/csrc 128 文件 7.1 式机械 HIP 头/守卫 + mha_all_aot.hip DeviceIndex 收窄修复×3 + 构建系统 gfx1201/dist 路径 + riscv64 守卫 |
++| vLLM | riscv/rocm100-port | **0e3a0c8879** | CMakeLists bfd foreach（lld COMDAT 回归规避，6 个 HIP 目标） |
++
++**里程碑 tag**：TheRock @ `riscv-baseline-m2-20260914`（annotated → 3c5036121，注明全栈版本与压测数据）。
++
++**补丁资产**（/home/ubuntu/work/GitlabLeo/patches-torch-vllm/）：
++- `torch-riscv64-adaptations.patch` **已重生成**（git diff v2.13.0..d382e57cdc7，6128 行，含 3 处 static_cast<c10::DeviceIndex>）——此前版本缺 mha 收窄修复
++- 0001/0002（7.1 docker-only 配方）、0003（qwen3.5，main 已原生支持，跳过）、MiopenStubs.cpp 留档
++
++**M4 验收清单**：
++- [x] PyTorch 2.13.0 本地构建 → wheel（311MB）→ GPU 冒烟（R9700 matmul）
++- [x] triton 3.7.0 / torchvision 0.28.0 / transformers 5.16.1 全部装齐
++- [x] vLLM main 本地构建安装（7 .so，bfd 链接修复）
++- [x] openai_harmony 桩 + amdsmi 平台检测打通
++- [x] Qwen3.5-9B serve 启动全链路（torch.compile 296s → CUDA graphs → Triton warmup）
++- [x] 吞吐压测：512 请求 / 2.70 req/s / 3454.11 tok/s 总 / 690.82 tok/s 输出
++- [x] §11.2 clang 测试冲突清理（7 文件）
++- [x] 全部修复本地提交 + M2 基线 tag
++- [ ] （可选后续）推送到远端 fork；M5 serve 常驻 + 在线压测（benchmark_serving）
++
++**待机状态**：无运行中构建/监控任务；torch.compile AOT 缓存与 CUDA graph 已落盘（~/.cache/vllm/），下次 serve 秒级进入推理。
++
++## 14. 战役总结（2026-09-14/15，M2→M4+M5 全部达成）
++
++**目标回顾**：在 AMD Radeon AI PRO R9700（Navi 48 / gfx1201）+ RISC-V64（riscv64gc，Ubuntu kernel 7.0.0-31）服务器上，以 TheRock 10.0 为基座全栈本地构建 ROCm + PyTorch + vLLM，跑通 Qwen3.5-9B 推理压测。
++
++**里程碑台账**：
++
++| 里程碑 | 内容 | 状态 |
++|---|---|---|
++| M1 | 环境盘点 / 仓库基线 / 适配移植（7.1.1 → 10.0 决策） | ✅ §2–§4 |
++| M2 | TheRock 10.0 全量构建（dist/rocm：HIP 7.15.26366 + clang 23.0.0git + 全部数学库） | ✅ §6–§12（16h，v16 终态） |
++| M3 | dist 冒烟（rocminfo / amd-smi / HSA 探卡） | ✅ §12.13 |
++| M4 | PyTorch 2.13.0 + triton 3.7.0 + torchvision 0.28.0 + vLLM main 本地构建 + 提交/tag | ✅ §13.1–§13.7 |
++| M5 | Qwen3.5-9B serve 全链路 + 吞吐压测 | ✅ §13.4 |
++
++**最终交付物**：
++1. 可复现 dist：`TheRock/build/dist/rocm`（tag `riscv-baseline-m2-20260914`）
++2. 四仓本地分支：TheRock `3c5036121` / amd-llvm `9f8c0bcff443` / PyTorch `d382e57cdc7` / vLLM `0e3a0c8879`
++3. 补丁资产：patches-torch-vllm/torch-riscv64-adaptations.patch（6128 行，134 文件）
++4. wheel 产物：torch 311MB + torchvision 1.2MB（wheelhouse/）
++5. venv-torch：全栈 Python 环境（可 instant serve，AOT/graph 缓存已落盘）
++6. 本文档：完整构建战报（修复 22+ 项，每项根因 + 修法）
++
++**核心压测数据**（Qwen3.5-9B，512×(1024in+256out)，64 并发）：
++- 2.70 req/s，3454.11 tok/s 总吞吐，690.82 tok/s 输出吞吐，稳态 decode 1231–1269 tok/s
++
++**关键经验**（详见各节）：
++- /tmp 重启即失 → 脚本一律放 /home；PowerShell 内联 ssh 会剥引号 → 多词参数必须走脚本文件
++- clang23（新 dist）vs clang20（旧栈）两类回归：braced-init 收窄报错（torch）、lld COMDAT 丢弃段（vLLM → bfd）
++- pip 重新 configure 会抹掉 rules.ninja 直改 → 持久修复必须落在 CMakeLists 级
++- TheRock 10.0 已收拢 rocm-libraries / rocm-systems 子模块；aotriton 0.12b 用预编译镜像（唯一非本地编译 kernel 库）
++- PyPI 0.2x 时代 torchvision 无 sdist → tag tarball 源码构建是唯一路径
++
++**待机状态**：无后台任务；后续可选 = 推送 fork / M5 常驻在线压测 / 常规 benchmark_serving。
++
++## 15. 容器化方案（备查，用户决策：暂不执行，2026-09-15）
++
++**决策**：用户选「先不做」——方案存档备查，未做任何构建。
++
++**环境事实**（2026-09-15 实测）：docker 29.1.3 已装（无 podman）；dist/rocm 8.4G、venv-torch 2.7G、wheelhouse 299M、triton dist 122M；vLLM 无现成 wheel（源码目录安装，需 `pip wheel` 补产）；宿主 = Ubuntu 26.04 LTS，系统 Python 3.14。
++
++**方案 A（推荐，wheel 重建式，约 2-3h）**：VLLM/vllm `pip wheel --no-deps` 补产 wheel（CMake 缓存热，bfd 修复随 CMakeLists 生效）→ wheelhouse 归拢（+triton wheel）→ Dockerfile（FROM ubuntu:26.04 + COPY dist → /opt/rocm + venv 装 wheel + ENV ROCM_PATH/LD_LIBRARY_PATH/PATH + openai_harmony 桩 entrypoint）→ 本机 build ~15min → 同机容器内重跑 512 条压测验证（±10%）→ `docker save | gzip` ~6-8GB scp 分发或推 GitLab registry。
++
++**方案 B（venv 整体搬运，1-1.5h）**：tar venv+dist 按原路径 COPY 进 ubuntu:26.04（python3.14 同路径 venv 可用）；快但层脏、升级需整包重做。
++
++**硬性约束**：① 镜像为 riscv64 架构，仅可移植到 riscv64 服务器；② 驱动不进镜像——目标宿主机必须自带支持 gfx1201 的 amdgpu 内核（≥7.0.0-31 同代），有 /dev/kfd + /dev/dri，运行加 `--device /dev/kfd --device /dev/dri --group-add video --group-add render --shm-size 16g`；③ 模型（19G）不进镜像，运行时挂载。
++
++## 16. Docker 容器化：TheRock+PyTorch+vLLM 可移植镜像（2026-09-15）
++
++**目标**：将 TheRock 10.0 dist + venv 全栈打包为 riscv64 镜像，容器内跑通 vLLM 文本推理。方案 A（venv 整体搬运，零网络构建）。
++
++### 16.1 环境事实与决策
++
++- docker 29.1.3 已装；宿主 Ubuntu 26.04 LTS、系统 Python 3.14.4；dist/rocm 8.4G、venv-torch 2.7G、wheelhouse 299M；vLLM 无现成 wheel。
++- **容器网络实测**：docker hub 直连超时（国内）；daocloud 拉取 ubuntu:26.04 成功；**容器内 pip 对 pypi.org 时通时断**——放弃 wheel 重建式（方案 A 的 pip -r requirements 路线连续两轮栽在 apache-tvm-ffi 构建隔离的下载上），改**零网络搬运**：venv 原路径整拷（基底 python3.14.4 与宿主同版本同路径，venv 符号链接/shebang 原样有效）。
++- 7.1 时代镜像 `vllm-rocm-riscv64:v0.5`（18.2GB，同款 Ubuntu 26.04 + py3.14.4）用作**缺失库测试床**，省去逐轮试错。
++
++### 16.2 构建步骤与命令
++
++```bash
++# 0) 产 vLLM wheel（后续可省——搬运式不需要，但资产归档有价值）
++cd VLLM/vllm && pip wheel --no-deps --no-build-isolation -w wheelhouse .   # ~40min，CMake 缓存热
++# → vllm-0.29.1.dev1+g0e3a0c887.rocm100-cp314-cp314-linux_riscv64.whl（bfd 提交版本）
++
++# 1) build context（硬链接拷贝，秒级零空间）
++CTX=/home/ubuntu/work/GitlabLeo/docker && mkdir -p $CTX
++cp -al TheRock/build/dist/rocm   $CTX/dist          # 8.4G
++cp -al venv-torch                $CTX/venv-torch    # 2.7G（含 amdsmi + openai_harmony 桩）
++cp -al wheelhouse                $CTX/wheelhouse    # 备用（搬运式不使用）
++
++# 2) 基底镜像（docker hub 直连不通 → daocloud）
++docker pull docker.m.daocloud.io/library/ubuntu:26.04
++docker tag docker.m.daocloud.io/library/ubuntu:26.04 ubuntu:26.04
++```
++
++**Dockerfile**（$CTX/Dockerfile，8 轮迭代的最终形态）：
++
++```dockerfile
++FROM ubuntu:26.04
++ENV DEBIAN_FRONTEND=noninteractive
++RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do \
++      [ -f "$f" ] && sed -i 's|http://[a-z.]*archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g; s|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' "$f" || true; done \
++ && apt-get update && apt-get install -y --no-install-recommends \
++      python3 python3-dev gcc libnuma1 libedit2 libc6-dev \
++      libjpeg-turbo8 libtiff6 libpng16-16 libopenjp2-7 liblcms2-2 \
++      libwebp7 libwebpdemux2 libwebpmux3 libavif16 libheif1 libxcb1 \
++      libdeflate0 libjbig0 \
++ && rm -rf /var/lib/apt/lists/* && python3 -V
++COPY dist /opt/rocm
++COPY venv-torch /home/ubuntu/work/GitlabLeo/venv-torch
++ENV ROCM_PATH=/opt/rocm \
++    LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib/llvm/lib \
++    PATH=/opt/rocm/bin:/opt/rocm/lib/llvm/bin:/home/ubuntu/work/GitlabLeo/venv-torch/bin:...
++RUN /home/ubuntu/work/GitlabLeo/venv-torch/bin/python -c \
++    "import torch, triton, torchvision, vllm, amdsmi, openai_harmony; print('STACK_IMPORT_OK', ...)"
++COPY entrypoint.sh /entrypoint.sh
++ENTRYPOINT ["/entrypoint.sh"]
++```
++
++**entrypoint.sh**：环境变量注入（ROCM_PATH/LD_LIBRARY_PATH/PATH）→ 默认 `vllm serve $MODEL --port 8000 --gpu-memory-utilization 0.92 --max-model-len 8192 --skip-mm-profiling`，MODEL_PATH/GPU_UTIL/MAX_LEN/PORT 可 env 覆盖；带参数则透传给 vllm CLI。
++
++**构建**（tmux 后台，log p7-docker-build.log）：
++
++```bash
++docker build -t therock-r9700-vllm:10.0 $CTX
++```
++
++### 16.3 八轮迭代战报（每轮根因 → 修法）
++
++| 轮 | 失败点 | 根因 | 修法 |
++|---|---|---|---|
++| 1 | Step1 FROM 失败 | docker hub 直连不通 | daocloud 拉取 + docker tag |
++| 2 | cffi 构建隔离下载失败 | 镜像源缺 cp314/riscv64 cffi wheel + 容器内 pypi.org 时通时断 | **换零网络策略：venv 整体搬运** |
++| 3 | import 缺 libedit.so.2 | torch 全家链接 libedit，基底无 | apt libedit2（7.1 镜像测试床定位） |
++| 4 | import 缺 libtiff.so.6 | PIL/torchvision 需图像库 | apt 一次性补 PIL 全套 13 包 |
++| 5 | serve 缺 stdlib.h | triton 探针 hip_utils.c 编译，基底无 glibc 头 | apt libc6-dev |
++| 6 | 探针缺 Python.h | python3-dev 在换零网络方案时被丢掉 | apt python3-dev |
++| 7（成功） | 探针 ld.lld 缺 -lgcc_s | 基底无 gcc 链接件 | apt gcc → **f605fad7f1d3，15.3GB/压缩 3.01GB** |
++
++> 教训：最小基底 + 大型 ML venv 的搬运，运行时库缺口集中在（a）venv 内预编译 so 的非 Python 依赖（图像/编辑行库）、（b）运行时探针工具链（libc 头 + Python.h + libgcc）。用「全功能镜像跑 ldd/import」一次性枚举比逐轮试错省 5 轮。
++
++### 16.4 启动命令（目标服务器）
++
++```bash
++# GPU 设备注入：/dev/kfd + /dev/dri；组用数字 GID（容器内无 render 组）
++KFD_G=$(stat -c %g /dev/kfd); DRI_G=$(stat -c %g /dev/dri/renderD128)   # 本机均=991
++docker run -d --name vllm-text \
++  --device /dev/kfd --device /dev/dri \
++  --group-add $KFD_G --group-add $DRI_G --shm-size 16g \
++  -v /models:/models:ro -p 8000:8000 \
++  -e GPU_UTIL=0.92 -e MAX_LEN=8192 -e PORT=8000 \
++  therock-r9700-vllm:10.0
++```
++
++### 16.5 验证（进行中）
++
++- [x] 镜像内 import 冒烟（torch/triton/torchvision/vllm/amdsmi/openai_harmony）——构建期 RUN 通过
++- [ ] 容器 GPU 探卡 + serve 启动（首次 compile ~5 min）
++- [ ] curl 文本推理（chat completion 中文请求）
++- [ ] （可选）512 条压测 parity（目标 ±10% of 3454 tok/s）
++
++**当前状态**：第 8 轮构建（补 gcc 包）16:18 启动——更正：文档初写时误记 15:21 已启动，实为 16:18 补发；容器级验证待镜像完成后执行。
++
++### 16.5 容器验证清单（更新 2026-09-15 17:36）
++
++| # | 验证项 | 结果 |
++|---|---|---|
++| 1 | Build #8（补 gcc）成功 | ✓ `281d2d62a5e3`，15.7GB/压缩 3.11GB，BUILD_RC=0 |
++| 2 | 容器 serve 启动（gcc 修复确认） | ✓ EngineCore init 801.37s（compile 321.35s），LBHNC KV cache；无 `-lgcc_s` 报错，triton 链接探针通过 |
++| 3 | `GET /v1/models` | ✓ 200（17:26:42） |
++| 4 | chat completion 文本生成 | ✓ 200 + 真实生成（thinking 模型输出，64 tok 截断 finish=length 属正常） |
++| 5 | 256 tok 复测 | ✓ completion_tokens=256 / prompt 18 tok，服务稳定 |
++| 6 | `enable_thinking=false` | ✓ 干净回复 finish=stop（41 tok）："我是 Qwen3.5，阿里巴巴最新推出的通义千问大语言模型……" |
++| 7 | Build #9（A+B）镜像验收 | ✓ `875c20f6ba25`，16.6GB/压缩 3.58GB；ENV 4 项 + /opt/vllm-wheels（4 wheel）+ /opt/vllm/benchmarks 全套 |
++
++### 16.6 官方 Dockerfile.rocm 对比与 A/B 并入（2026-09-15）
++
++对比对象：vllm-project/vllm main `docker/Dockerfile.rocm`（多阶段：base→fetch_vllm→rust-build→csrc-build→build_vllm→build_rixl→build_rocshmem/DeepEP→mori_base→ci_base→final→vllm-openai，BASE_IMAGE=rocm/vllm-dev:base，jammy）。
++
++**已等价覆盖（无需动作）**：
++- ROCm runtime：rocm/vllm-dev:base ↔ TheRock dist `/opt/rocm`（8.4G）
++- torch/triton/vllm：镜像内源码构建 ↔ venv 整拷（版本一致，host 压测已验证）
++- requirements/rocm.txt 依赖 ↔ venv 已含全部
++- ENTRYPOINT ["vllm","serve"] ↔ entrypoint.sh（等价 + 可配 env 默认值）
++
++**判定不需要（场景不同，备查）**：
++- RIXL/UCX/rdma-core/DeepEP/ROCShmem/MoRI/AINIC/BNXT —— gfx942/gfx950 多卡 RDMA 与专家并行专用，R9700 单卡无关
++- uv/sccache/ccache/mold/rust-build/protoc —— 构建期工具，运行时镜像不需要
++- KINETO_CONFIG + ROCTRACER_MAX_EVENTS=10000000 —— 本仓 torch 为 USE_KINETO=OFF 构建，无 kineto profiler，env 无对象
++- HF_XET_HIGH_PERFORMANCE / HF_HUB_DOWNLOAD_TIMEOUT —— 模型走本地 /models 挂载，不联网下载
++
++**用户决策并入（A+B）**：
++- A 性能 ENV 4 项：`SAFETENSORS_FAST_GPU=1`（safetensors GPU 加载加速，官方注明改善端到端时间）、`HIP_FORCE_DEV_KERNARG=1`（HIP kernarg 性能）、`TOKENIZERS_PARALLELISM=false`（消 tokenizer fork 告警）、`HSA_ENABLE_IPC_MODE_LEGACY=1`（HSA IPC pinning 规避，rocm-libraries#6266；单卡无害）
++- B 内容物：wheelhouse→`/opt/vllm-wheels`（torch/torchvision/triton/vllm 4 wheel ≈461M 存档，官方镜像同样存 wheel）、VLLM/vllm/benchmarks→`/opt/vllm/benchmarks`（1.6M 压测脚本，含 benchmark_serving.py）
++
++**未并入（用户未选/暂缓，备查）**：
++- MIOPEN_DEBUG_CONV_DIRECT/GEMM=0 —— LLM 文本推理不走 conv，纯保险项
++- torchcodec（ROCm 源码构建 + ffmpeg dev libs）—— 音视频多模态输入才需要；R9700 未验证，构建成本高，暂缓
++- huggingface-hub[cli] —— 本地挂载不需要（venv 已有 huggingface_hub 1.30.0 库本体）
++- fastsafetensors USE_ROCM 源码重建 —— 现有 PyPI CPU wheel 0.4.0 加载 19G 权重已验证正常
++
++**Build #9 战报**：Dockerfile 在 import 冒烟层之后追加 ENV 块与两个 COPY（位置选在缓存关键层之后，dist/venv 层缓存命中；venv 层缓存校验耗时 ~15 min 后命中，未重拷）；17:08 发射→17:30 完成，BUILD9_RC=0。镜像 `875c20f6ba25`（16.6GB/压缩 3.58GB）。运行中容器 vllm-text 仍锚定 build #8 镜像 281d2d62a5e3（其 ID 变 dangling `<none>`），下次 `docker rm` + `run` 自然切到 #9 镜像（A/B 为惰性内容：ENV 元数据 + 文件，不影响已验证行为）。
++
++**自动化链路**：p7_wait2.sh 以 nohup 在服务器端分离守护（防 ssh 断联丢链）：轮询 BUILD_RC=0 → 校验新镜像 ID≠旧 ID → 自动 `docker rm -f`+`run` 容器（GID 991 模板）→ 自动 nohup 发射 build #9。
++坑：`pkill -f p7_wait2` 会自匹配并杀掉 ssh 自身 shell（远端 bash -c 命令行包含该字符串），导致后续命令静默不执行——改用 `pgrep -f 'wait2[.]sh'` 方括号模式规避自匹配。
++
++**迭代表续（接 §16.3）**：
++
++| 轮 | 触发 | 修复/动作 | 结果 |
++|---|---|---|---|
++| 8 | 容器 `ld.lld: unable to find library -lgcc_s` | Dockerfile apt 增 gcc（triton JIT 链接探针需要 libgcc_s，lld 需 gcc 提供链接闭包） | ✓ 281d2d62a5e3；容器推理跑通（16.5 #1-#6） |
++| 9 | 官方 Dockerfile.rocm 对比（用户决策 A+B） | ENV 4 项 + COPY wheelhouse→/opt/vllm-wheels + COPY benchmarks→/opt/vllm/benchmarks | ✓ 875c20f6ba25；验收全过（16.5 #7） |
++
++**容器内验证命令（复现）**：
++```bash
++# 启动（镜像已含 gcc + A/B）
++docker rm -f vllm-text
++docker run -d --name vllm-text \
++  --device /dev/kfd --device /dev/dri --group-add 991 \
++  --shm-size 16g -v /models:/models:ro -p 8000:8000 \
++  therock-r9700-vllm:10.0
++# 等 ~13 min（首次 compile）后：
++curl -s http://localhost:8000/v1/models
++curl -s http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
++  -d '{"model":"/models/Qwen3.5-9B","messages":[{"role":"user","content":"用一句话介绍你自己"}],"max_tokens":96,"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}'
++```
++
++## 17. 容器 vllm-therock-10.0 压力测试（vllm bench throughput，2026-09-15 启动，进行中）
++
++### 17.1 背景与目标
++
++在 riscv64 容器 `vllm-therock-10.0`（镜像 `therock-r9700-vllm:10.0` = `875c20f6ba25`，即含 gcc 修复 + A/B 增强的 build #9）内，对 Qwen3.5-9B 做系统化吞吐压测，回答两个问题：
++1. **最大 output tokens/s** 及其参数组合（random-input-len × random-output-len × max-num-seqs）；
++2. **性能拐点时的 max-num-seqs** 值（吞吐停止有效增长的临界并发批大小）。
++
++参考基线：§13.4 host 离线压测（in=1024/out=256/seqs=64/512 prompts/0.95/8192/8 warmups）→ output 690.82 tok/s、total 3454.11 tok/s、2.70 req/s、≈190s。
++
++### 17.2 测试方法选型
++
++| 方案 | 每条 run 开销 | 评估 |
++|---|---|---|
++| `benchmark_serving.py`（online，`--base-url` 打运行中 server + `--max-concurrency` 扫频） | 仅流量（0.5-8 min/run），服务器零重启 | 最高效；但**非用户指定方式**，仅作备选（脚本已随镜像 B 项打包于 `/opt/vllm/benchmarks/`） |
++| `vllm bench throughput`（离线，本版本**无** `--base-url`，经源码核实 `vllm/benchmarks/throughput.py`） | 引擎初始化 ~8 min/run（首次 ~13 min；compile 缓存命中后省 ~320s） | **用户指定采用**；全矩阵 144 组合不可行（≈30h+），需自适应分阶段 |
++
++关键事实（源码核实）：本版本 `vllm bench throughput` 三维度均为 bench 自身 CLI 参数（`--random-input-len/--random-output-len/--max-num-seqs` 逐 run 传参），**无需重启任何服务**；`--num-warmups`、`--max_num_batched_tokens`、`--gpu-memory-utilization` 均支持（§13.4 已验证）。
++
++### 17.3 容器准备（常驻不服务模式）
++
++**坑（已踩）**：用户以 `docker run ... -d ... sleep infinity` 创建容器时，entrypoint.sh 把 CMD 透传给 `vllm` 主命令 → 实际执行 `vllm sleep infinity` → argparse 报错 exit 2。
++
++**正确姿势**：覆盖 entrypoint，保持容器常驻、GPU 独占（无 serve 进程争抢）：
++
++```bash
++docker rm -f vllm-therock-10.0
++docker run -d --name vllm-therock-10.0 \
++  --device /dev/kfd --device /dev/dri --group-add 991 \
++  --shm-size 16g -v /models:/models:ro -p 8000:8000 \
++  --entrypoint /bin/bash therock-r9700-vllm:10.0 -c 'sleep infinity'
++```
++
++模型路径修正：用户命令中 `/Qwen3.5-9B` → 容器内实际为 `/models/Qwen3.5-9B`。
++
++### 17.4 自适应测试方案（经用户批准：按既有经验动态调整，求最大值与拐点）
++
++依据 §13.4 经验（decode-bound：Running=64 时引擎稳态 decode ~1250 tok/s；prefill 峰值 ~6431 tok/s）设计三阶段：
++
++| 阶段 | 设计 | runs | 说明 |
++|---|---|---|---|
++| **P1 拐点主扫** | in=128 / out=1024（decode 饱和型：prefill 小、解码量最大，最能暴露并发批的解码扩展性）；seqs 32→64→96→128→160→192→224→256 **递增** | 5-8（早停） | **早停规则**：相邻档 output tok/s 增幅 <10% 或下降 → 停，前一档即拐点 |
++| **P2 全网格** | in {64,128,256,512,1024,2048} × out {128,256,512,1024}，@ seqs=P1 拐点值 | 24 | 求全局最大 output tok/s 及最优组合 |
++| **P3 交叉验证** | P2 最优 in/out 组合下，seqs ∈ {0.5×, 0.75×, 1.25×, 1.5×} × 拐点值 | 4 | 验证拐点随序列长度组合的漂移 |
++
++合计 ~32-36 runs，预计 7.5-8.5 h（离线模式每 run ~8 min 引擎初始化为固定开销）。
++
++### 17.5 执行命令与自动化
++
++单条 run（容器内 `docker exec`，与 §13.4 完全同参）：
++
++```bash
++vllm bench throughput --model /models/Qwen3.5-9B --skip-mm-profiling \
++  --dataset-name random --random-input-len $IN --random-output-len $OUT \
++  --gpu-memory-utilization 0.95 --max_num_batched_tokens 8192 \
++  --num-prompts 512 --max-num-seqs $SQ --num-warmups 8
++```
++
++总控 `p8_bench_runner.sh`（nohup 分离，防 ssh 断联）：
++- 逐 run 解析 `Throughput: X req/s, Y total tokens/s, Z output tokens/s` 追加 CSV
++- CSV schema：`stage,in_len,out_len,max_num_seqs,output_tok_s,total_tok_s,req_s,duration_s,rc`
++- 落盘：`~/work/GitlabLeo/bench_sweep/`（results.csv + 每 run 日志 s{P}_i{}_o{}_q{}.log）
++- 单 run 失败重试 1 次，再败标记跳过（5-strike 规则）；单 run `timeout 4200s` 封顶
++- 全部完成后自动输出 `[BEST OVERALL]` 并退出
++
++### 17.6 进度与结果（滚动更新）
++
++**状态：进行中**（18:56:53 启动，run #1 引擎初始化中）。
++
++P1 拐点曲线（in=128/out=1024，落成后填入）：
++
++| seqs | output tok/s | total tok/s | 增幅 | 备注 |
++|---|---|---|---|---|
++| 32 | （跑测中） | | | |
++| 64 | | | | |
++| … | | | | |
++
++P2 网格 / P3 交叉验证：待 P1 拐点产生后填充。
++
++**验收锚点**：P2 中 `in=1024/out=256` 与 §13.4 基线同参（seqs=拐点值时口径不同，仅方向性对照）。
++
++### 17.7 压测终值与结论（v2.1 矩阵，0915）
++
++**执行概要**：v2.1 矩阵 10/10 runs 全部完成（P1 拐点括住 4 点 + P2 峰值搜索 6 组合；P3 因最优值已在 112 顶格、无更高安全点可测而自然跳过）。
++
++**P1 拐点主扫（in=128 / out=1024）**：
++
++| max-num-seqs | output tok/s | total tok/s | 较前档增幅 |
++|---|---|---|---|
++| 32 | 811.23 | 912.63 | — |
++| 64 | 1275.00 | 1434.37 | +57.2% |
++| 96 | 1328.94 | 1495.05 | +4.2% |
++| 112 | 1362.74 | 1533.09 | +2.5% |
++
++拐点判定：64 之后收益骤减（+4.2% → +2.5% 进入平台期）；饱和上限 = 112（量程顶格）。新栈 decode 天花板 ~1360 tok/s（in128/o1024 形状），比 0914 报告的 1,100-1,120 高 ~20%。
++
++**P2 峰值搜索（@ seqs=112，KV 安全 bs）**：
++
++| 形状 | bs | output tok/s | total tok/s |
++|---|---|---|---|
++| in64 / out512 | 112 | **1554.52** | 1748.84 |
++| in64 / out1024 | 112 | 1366.74 | 1452.16 |
++| in128 / out512 | 112 | 1524.78 | 1905.98 |
++| in128 / out1024 | 112 | 1331.59 | 1498.04 |
++| in256 / out512 | 112 | 1436.44 | **2154.67** |
++| in256 / out1024 | 103* | 924.23 | 1155.29 |
++
++*in256/o1024 受 KV 硬约束（0.95×139000/(256+1024)=103）自动降档，防 preemption 污染数据。
++
++**全局结论**：
++- **output tok/s 全局峰值：1554.52 @ in64/out512/seqs=112**（比 0914 历史峰值 1,016.09 高 53%）
++- **拐点 max-num-seqs：96 为收益拐点（+4.2%），112 为饱和上限**；生产部署建议 max-num-seqs=112
++- total tok/s 峰值 2,154.67 @ in256/out512/seqs=112（prefill 重载型）
++- 峰值形状从 0914 的 in256/o1024 迁移到 **in64/o512**（短输入+中输出、高并发）：新栈 KV/调度优化后短输入高并发优势显著
++- 短输出（o512）普遍优于 o1024（解码占比下降）；o1024 系列受 KV 容量压制
++- in256/o1024 即使 KV 安全降档（103）仍仅 924 → 长输入+长输出是本卡（R9700 32GB）硬瓶颈区
++
++**运行事件记录**：
++1. wait_gpu_idle 自匹配 bug：`pgrep -fc "vllm bench"` 匹配到检查命令自身 cmdline → 空转 12 分钟；改括号模式 `vllm ben[c]h` 修复
++2. `p8_bench_all2.log` 被外部删除（runner stdout fd 失效，仅丢回显；CSV 落数据无损，事实源完好）
++3. 部署 `p8_guardian.sh` 守护（5min 周期：CSV 增行自动刷新 docx + runner 死亡自愈 + 完成终刷）；本次 runner 正常跑完未触发自愈
++4. docx knee 标注改为 CSV 推导（P1 中 output 最大点的 seqs），不再依赖日志文件
++
++**产物**：
++- `bench_sweep/results.csv`（10 行终值）
++- `TheRock/vllmbentch-therock-10.0.docx`（39.5KB，2 图 6 表，10 结果，KNEE=112，BEST=1554.52）
++- 图表：`bench_sweep/chart_p1_knee.png`（P1 拐点曲线）、`chart_p2_grid.png`（P2 六组合网格）

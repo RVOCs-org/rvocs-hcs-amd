@@ -1,0 +1,9 @@
+# therock patch series (applied in order with git apply)
+# Exported from upstream commits with git format-patch; submodule gitlinks and .gitmodules are stripped
+1001-riscv64-strip-version-script-from-sysdeps-meson-ld.patch
+1002-docs-update-build-status-and-gitlab-backup-record.patch
+1003-riscv64-refresh-hwloc-config-guess-sub-in-patch-so.patch
+1004-riscv64-gfx1201-build-fixes-campaign-journal-m2-m4.patch
+1005-add-therock-amdsmi-deferred-cmake-amdsmi-deferred.patch
+1006-pins-amd-llvm-1-ompt-riscv64-weak-fallbacks-fix-9.patch
+1007-compiler-enable-nvptx-llvm-target-bump-rocm-librar.patch

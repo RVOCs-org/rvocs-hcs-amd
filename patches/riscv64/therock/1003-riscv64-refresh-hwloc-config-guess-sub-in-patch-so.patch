@@ -1,0 +1,59 @@
+From 53cb0c12db188e73728a39bab1cfdb1059b4725d Mon Sep 17 00:00:00 2001
+From: riscv-port <riscv-port@local>
+Date: Sun, 13 Sep 2026 00:00:09 +0800
+Subject: [PATCH] riscv64: refresh hwloc config.guess/sub in patch_source;
+ portable pause shims in rocm-systems; doc v6
+
+
+diff --git a/TheRock10.0-9700-Riscv-build.md b/TheRock10.0-9700-Riscv-build.md
+index 3963c8a9788431f0a515a46305fd65a7ecdc5e3e..ac5742a474dbd9e6190c432c73f27d696be563f1 100644
+--- a/TheRock10.0-9700-Riscv-build.md
++++ b/TheRock10.0-9700-Riscv-build.md
+@@ -162,3 +162,28 @@ ninja -C build
+ - "在迭代中，尽量参考/home/ubuntu/work/GitlabLeo/RISC-V-7.1.1中的已经做过的适配，需要的就移植到TheRock 10.0中去"
+ - 子模块"定向到https://github.com/ROCm/TheRock/tree/therock-10.0 而不是：https://gitlab.metastonecorp.com/rv-rocm"
+ - 构建基线备份到内部 GitLab（本文档第 8 节），作为后续构建的基线版本
++
++## 11. 会话续接（v5 → v6，2026-09-12 深夜）
++
++### 11.1 修复 #5：hwloc tarball 内 config.guess 为 2014 年版本，不识别 riscv64
++- 现象：`[therock-hwloc] configure: error: cannot guess build type; you must specify one`
++- 根因：TheRock 捆绑的 hwloc 源码 tarball 内 `config/config.guess` 时间戳 2014-11-04，早于 riscv64 识别支持（2016+）；x86/CI 上不受影响
++- 修复：`third-party/sysdeps/common/hwloc/patch_source.sh` 末尾追加：用系统 autotools-dev 副本（`/usr/share/misc/config.guess|config.sub`，2025-03）覆盖 `source/config/` 下同名文件（patch_source.sh 在每次 configure 前执行，幂等）
++
++### 11.2 修复 #6：rocr-runtime/clr 的 x86 intrinsic（10.0 新增代码，7.1.1 基线中无此代码）
++- `amd_blit_sdma.cpp`（2 处，行 1972/2047）：10.0 新增的 Reserve/PadRingToEnd 循环裸调 `_mm_pause()` → 新增 `BlitCpuPause()`：x86 保留 intrinsic、riscv64 用 Zihintpause `pause` 汇编、其余回退 `os::YieldThread()`（与 7.1.1 同文件先例一致）
++- `clr/rocclr/os/os.cpp` `Os::spinPause()`：riscv64 上原为空实现（热自旋烧核）→ 补 `#elif defined(__riscv)` 分支用 `pause` 汇编
++- 已排查、无需修复：`amd_gpu_agent.cpp:4534`（`_MSC_VER`/x86 guard 内）、`nontemporal.hpp:354`（`ATI_ARCH_X86` guard 内）、`rocvirtual.cpp`（未提交的冲突标记修复已含 shim，随本次一并提交）
++- amd-llvm 测试文件 5 处已提交的冲突标记（clang/test/SemaCXX/warn-unsafe-buffer-usage*.cpp）：`THEROCK_BUILD_LLVM_TESTS=OFF` 不阻塞构建，M2 后清理
++
++### 11.3 并发构建事故与清理
++- 发现 4 个 `ninja -C build` 并发实例互踩：21:24/21:39/22:11 三个孤儿进程（各挂死 simde/SuiteSparse/grpc 下载 cmake 子进程）+ 23:49 由 p3_loop.sh 启动的迭代
++- 处置：kill p3_loop.sh + 全部 ninja + 残留 cc1plus；v6 起改用单一受控 runner `/tmp/p6_build.sh`
++- runner 不再设置代理 env（10.128.254.31 代理已死）；git 拉取走 `~/.gitconfig` 的 gh-proxy 传输代理规则，源码 tarball 已预置
++
++### 11.4 v6 启动方式
++```bash
++nohup /tmp/p6_build.sh </dev/null >/dev/null 2>&1 &
++# 日志仍追加到 /home/ubuntu/work/GitlabLeo/p3-build.log，按 `=== build v6.N ===` 分段
++# 里程碑：M2 = build exit 0 → P4 冒烟（rocminfo gfx1201 + HIP vectorAdd）
++```
+diff --git a/third-party/sysdeps/common/hwloc/patch_source.sh b/third-party/sysdeps/common/hwloc/patch_source.sh
+index 4606f50d2b70bc7857ddc433ad3f42e637e250e4..9ebb3852f434080274d2b63ba96f1ade325c2e34 100755
+--- a/third-party/sysdeps/common/hwloc/patch_source.sh
++++ b/third-party/sysdeps/common/hwloc/patch_source.sh
+@@ -28,3 +28,14 @@ find "$SOURCE_DIR" -name "Makefile.in" -type f -exec grep -l "libhwloc\.la" {} \
+ done
+ 
+ echo "hwloc patching completed."
++
++# riscv64: the hwloc tarball's bundled config.guess/config.sub (2014) cannot
++# detect riscv64; refresh both from the system autotools-dev copies.
++if [ -d "$SOURCE_DIR/config" ]; then
++  for cfg in config.guess config.sub; do
++    if [ -f "/usr/share/misc/$cfg" ]; then
++      cp -f "/usr/share/misc/$cfg" "$SOURCE_DIR/config/$cfg"
++      echo "riscv64 fix: refreshed config/$cfg from /usr/share/misc/$cfg"
++    fi
++  done
++fi

@@ -1,0 +1,36 @@
+From 667e790e40497c01395dcbb72f479db39f468801 Mon Sep 17 00:00:00 2001
+From: zhengguangchun <zhengguangchun@metastonecorp.com>
+Date: Thu, 17 Sep 2026 15:29:56 +0800
+Subject: [PATCH] [riscv64] OMPT: weak no-op fallbacks for device-tracing hooks
+ (fix #9)
+
+setOmptAsyncCopyProfile / setGlobalOmptKernelProfile / getSystemTimestampInNs are implemented only in the AMDGPU plugin, which upstream CMake gates to x86_64/ppc64le/aarch64 hosts. On riscv64, libPluginOmpt.a linked into libomptarget left these symbols undefined (build v9 failure: undefined symbol setOmptAsyncCopyProfile(bool)). Weak definitions let the strong AMDGPU-plugin symbols win whenever that plugin is linked (x86_64 builds).
+
+Recovered from build workspace 2026-09-17 (was uncommitted since 2026-09-13, .bak-ompt-20260913).
+
+diff --git a/offload/plugins-nextgen/common/OMPT/OmptTracing.cpp b/offload/plugins-nextgen/common/OMPT/OmptTracing.cpp
+index d5be9b8d9cd8a7497312c76728a090a88921a80b..a3e814efe7b372b9085630e4871c16ac4de13b56 100644
+--- a/offload/plugins-nextgen/common/OMPT/OmptTracing.cpp
++++ b/offload/plugins-nextgen/common/OMPT/OmptTracing.cpp
+@@ -311,3 +311,21 @@ ompt_interface_fn_t llvm::omp::target::ompt::lookupDeviceTracingFn(
+ #pragma pop_macro("DEBUG_PREFIX")
+ 
+ #endif // OMPT_SUPPORT
++
++// ==== fix #9 (riscv64, 2026-09-13): weak no-op fallbacks ====
++// The device-tracing hooks below are implemented only in the AMDGPU plugin
++// (plugins-nextgen/amdgpu/src/rtl.cpp:181/188/6707). Upstream restricts that
++// plugin to x86_64/ppc64le/aarch64 hosts (offload/CMakeLists.txt arch gate,
++// v9 log line 1016), so on riscv64 libPluginOmpt.a linked into libomptarget
++// left these symbols undefined (v9 failure: "undefined symbol:
++// setOmptAsyncCopyProfile(bool)"). Weak definitions: the strong AMDGPU-plugin
++// definitions win whenever that plugin is linked (x86_64 builds).
++__attribute__((weak)) void setOmptAsyncCopyProfile(bool Enable) {
++  (void)Enable;
++}
++__attribute__((weak)) void setGlobalOmptKernelProfile(void *Device,
++                                                      int Enable) {
++  (void)Device;
++  (void)Enable;
++}
++__attribute__((weak)) uint64_t getSystemTimestampInNs() { return 0; }

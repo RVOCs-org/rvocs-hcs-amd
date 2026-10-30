@@ -1,0 +1,35 @@
+From 36e3b5405737f238939dca9659a88eb7dbc82a79 Mon Sep 17 00:00:00 2001
+From: zhengguangchun <zhengguangchun@metastonecorp.com>
+Date: Sun, 20 Sep 2026 09:37:34 +0800
+Subject: [PATCH] hipSOLVER: make LAPACK GENERIC target riscv64-aware
+ (RISCV64_GENERIC)
+
+OpenBLAS 0.3.33 has no kernel/riscv64/KERNEL.generic; its portable
+riscv64 target is RISCV64_GENERIC. The unconditional -DTARGET=GENERIC
+broke lapack/hipSOLVER configure on riscv64 (reproduced twice during
+TheRock 10.0 bring-up). Keep GENERIC for all other architectures.
+
+Verified on RISC-V 9700 (gfx1201): full TheRock 10.0 build,
+libhipsolver.so.1.3 produced, LAPACK/hipSOLVER path passes end-to-end.
+
+diff --git a/projects/hipsolver/CMakeLists.txt b/projects/hipsolver/CMakeLists.txt
+index 8a8ffd89fd7737810396c6011c968ca063175c32..9bf04f84bf6c74b4fba43e42c5da21907960a73b 100644
+--- a/projects/hipsolver/CMakeLists.txt
++++ b/projects/hipsolver/CMakeLists.txt
+@@ -212,8 +212,14 @@ if(NOT "${HIP_PLATFORM}" STREQUAL "nvidia")
+             list(APPEND LAPACK_CMAKE_ARGS -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
+         endif()
+ 
+-        # Force GENERIC target to ensure binaries work on all CPUs
+-        list(APPEND LAPACK_CMAKE_ARGS -DTARGET=GENERIC)
++        # Force GENERIC target to ensure binaries work on all CPUs.
++        # riscv64: OpenBLAS 0.3.33 lacks kernel/riscv64/KERNEL.generic; its
++        # portable target is RISCV64_GENERIC (KERNEL.RISCV64_GENERIC).
++        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "riscv64")
++            list(APPEND LAPACK_CMAKE_ARGS -DTARGET=RISCV64_GENERIC)
++        else()
++            list(APPEND LAPACK_CMAKE_ARGS -DTARGET=GENERIC)
++        endif()
+ 
+         # Downgrade incompatible-pointer-types errors to warnings when using Clang
+         if(CMAKE_C_COMPILER_ID MATCHES "Clang")

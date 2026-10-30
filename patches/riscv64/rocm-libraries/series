@@ -1,0 +1,5 @@
+# rocm-libraries patch series (applied in order with git apply)
+# Exported from upstream commits with git format-patch; submodule gitlinks and .gitmodules are stripped
+# 2002 is new in this repository: drop MIOpen's -Werror on riscv64
+2001-hipsolver-make-lapack-generic-target-riscv64-aware.patch
+2002-miopen-drop-werror-on-riscv64.patch

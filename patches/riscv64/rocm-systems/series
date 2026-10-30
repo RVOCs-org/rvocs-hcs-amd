@@ -1,0 +1,8 @@
+# rocm-systems patch series (applied in order with git apply)
+# Exported from upstream commits with git format-patch; submodule gitlinks and .gitmodules are stripped
+3001-claude.patch
+3002-riscv-port-v100-platform-adaptation-7-1-1-patches.patch
+3003-fix-resolve-leftover-merge-conflict-markers-in-roc.patch
+3004-riscv64-portable-cpu-pause-for-rocr-blit-sdma-and.patch
+3005-kpack-add-riscv64-elf-machine-type-and-relocation.patch
+3006-rccl-guard-x86-cpuid-in-init-cc-add-riscv-arch-bra.patch

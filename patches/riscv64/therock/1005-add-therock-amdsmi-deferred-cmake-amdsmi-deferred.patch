@@ -1,0 +1,20 @@
+From 3c50361211d8570ea34d1f0d1303fe2d53dcd487 Mon Sep 17 00:00:00 2001
+From: rv-rocm <rv-rocm@local>
+Date: Tue, 15 Sep 2026 00:19:43 +0800
+Subject: [PATCH] Add therock_amdsmi_deferred.cmake (amdsmi deferred-build
+ support, riscv64 campaign)
+
+
+diff --git a/cmake/therock_amdsmi_deferred.cmake b/cmake/therock_amdsmi_deferred.cmake
+new file mode 100644
+index 0000000000000000000000000000000000000000..57a94f1dbb030cc0f5e0f73445ef7d32068839a3
+--- /dev/null
++++ b/cmake/therock_amdsmi_deferred.cmake
+@@ -0,0 +1,7 @@
++# fix #12 (riscv64, 2026-09-13): included as CMAKE_PROJECT_INCLUDE, i.e. the
++# LAST step of project() - after language/platform setup and before any
++# add_subdirectory() executed by the caller's CMakeLists. See
++# therock_primlibs_benchmark_deps.cmake for full context.
++if(NOT TARGET amd_smi)
++  find_package(amd_smi REQUIRED CONFIG)
++endif()

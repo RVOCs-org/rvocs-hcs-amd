@@ -1,0 +1,32 @@
+From 0e3a0c88799d8daac03170a01a47ca69007ed3da Mon Sep 17 00:00:00 2001
+From: rv-rocm <rv-rocm@local>
+Date: Tue, 15 Sep 2026 00:20:25 +0800
+Subject: [PATCH] Link HIP targets with GNU ld (bfd): work around lld COMDAT
+ regression
+
+AMD clang 23.0.0git (TheRock 10.0 dist) + lld fails on riscv64 with
+'relocation refers to a symbol in a discarded section (.LEHB*)' in
+COMDAT + exception-table code. Set LINK_FLAGS '-fuse-ld=bfd' for all
+HIP shared-lib targets (_C, _rocm_C, _moe_C, _C_stable_libtorch,
+_moe_C_stable_libtorch, _rocm_C_skinny). Cache-var CMAKE_HIP_SHARED_LINKER_FLAGS
+does not propagate (UNINITIALIZED); rules.ninja edits are wiped by pip's
+cmake reconfigure, hence CMakeLists-level fix.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index bf7a58e5722ccb2180fe99427ede6a5a1400fa05..e2eae8977eef78a6764874b9fd3f61dc08f54a93 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1564,3 +1564,13 @@ if (VLLM_GPU_LANG STREQUAL "CUDA")
+     # vllm-flash-attn should be last as it overwrites some CMake functions
+     include(cmake/external_projects/vllm_flash_attn.cmake)
+ endif ()
++
++# --- riscv64 + clang23 lld workaround (2026-09-14) ---
++# clang23/lld 23 fails "relocation refers to a symbol in a discarded section"
++# (.LEHB/.LFB exception-table labels, COMDAT) when linking HIP modules.
++# GNU ld tolerates it; force bfd for all shared modules.
++foreach(_vllm_mod_target _C _rocm_C _moe_C _C_stable_libtorch _moe_C_stable_libtorch _rocm_C_skinny)
++  if(TARGET ${_vllm_mod_target})
++    set_property(TARGET ${_vllm_mod_target} APPEND PROPERTY LINK_FLAGS "-fuse-ld=bfd")
++  endif()
++endforeach()

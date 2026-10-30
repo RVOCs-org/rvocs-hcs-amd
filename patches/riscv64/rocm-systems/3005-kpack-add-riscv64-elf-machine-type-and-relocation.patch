@@ -1,0 +1,38 @@
+From fe3a9f962652afc2acb51fffc991748756b1bd46 Mon Sep 17 00:00:00 2001
+From: zhengguangchun <zhengguangchun@metastonecorp.com>
+Date: Thu, 17 Sep 2026 15:30:03 +0800
+Subject: [PATCH] [riscv64][kpack] add RISCV64 ELF machine type and relocation
+ config
+
+rocm_kpack/elf/types.py: EM_RISCV=243, R_RISCV_RELATIVE=3, and ArchConfig(page_size=0x1000, r_relative=R_RISCV_RELATIVE) in _ARCH_CONFIGS. Without it rocm-kpack raises KeyError on riscv64 ELF (e_machine=243) during packaging.
+
+Recovered from build workspace 2026-09-17 (was uncommitted since 2026-09-13, .bak-riscv-20260913).
+
+diff --git a/shared/kpack/python/rocm_kpack/elf/types.py b/shared/kpack/python/rocm_kpack/elf/types.py
+index b25f0d36a8c35be402b3595c8d1c937abb089af8..72bfa1b4b07f677f01f3edab6dc68b69c77b559e 100644
+--- a/shared/kpack/python/rocm_kpack/elf/types.py
++++ b/shared/kpack/python/rocm_kpack/elf/types.py
+@@ -22,6 +22,7 @@ ELF_MAGIC = b"\x7fELF"
+ # ELF machine types (e_machine)
+ EM_X86_64 = 62
+ EM_PPC64 = 21
++EM_RISCV = 243  # riscv64
+ 
+ # ELF header offsets (for direct byte access)
+ E_IDENT_OFFSET = 0
+@@ -106,6 +107,7 @@ R_X86_64_RELATIVE = 8  # Used for PIE/shared library pointer adjustments
+ 
+ # Relocation types (ppc64le)
+ R_PPC64_RELATIVE = 22  # Used for PIE/shared library pointer adjustments
++R_RISCV_RELATIVE = 3  # Used for PIE/shared library pointer adjustments (riscv64)
+ 
+ # Dynamic section tags (d_tag)
+ DT_NULL = 0
+@@ -582,6 +584,7 @@ class ArchConfig:
+ _ARCH_CONFIGS: dict[int, ArchConfig] = {
+     EM_X86_64: ArchConfig(page_size=0x1000, r_relative=R_X86_64_RELATIVE),
+     EM_PPC64: ArchConfig(page_size=0x10000, r_relative=R_PPC64_RELATIVE),
++    EM_RISCV: ArchConfig(page_size=0x1000, r_relative=R_RISCV_RELATIVE),
+ }
+ 
+ def get_arch_config(e_machine: int) -> ArchConfig:

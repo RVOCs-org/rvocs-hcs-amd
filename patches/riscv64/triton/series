@@ -1,0 +1,4 @@
+# triton patch series (applied in order with git apply)
+# Exported from upstream commits with git format-patch; submodule gitlinks and .gitmodules are stripped
+6001-triton-depends-on-llvm-riscv-module.patch
+6002-port-triton-to-llvm-mlir-23-amd-llvm-shipped-by-th.patch

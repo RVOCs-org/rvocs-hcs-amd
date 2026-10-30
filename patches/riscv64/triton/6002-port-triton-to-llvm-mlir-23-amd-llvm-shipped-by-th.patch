@@ -1,0 +1,483 @@
+From 622529583b468e4ed6ffed012e4d6a9657035a38 Mon Sep 17 00:00:00 2001
+From: zhengguangchun <zhengguangchun@metastonecorp.com>
+Date: Sun, 20 Sep 2026 09:37:41 +0800
+Subject: [PATCH] Port triton to LLVM/MLIR 23 (amd-llvm shipped by TheRock
+ 10.0)
+
+Adaptations required to build against the LLVM/MLIR 23 toolchain from
+TheRock 10.0 (clang23/lld), enabling riscv64 gfx1201 targets:
+
+- 8 dialect .td files updated for LLVM 23 tablegen
+- Dialect.h x4: getName() const (MLIR 23 API)
+- python/src/llvm.cc: NoInfs/NoNaNs fast-math flags removed in
+  LLVM 23; OptLevel Os/Oz no longer accepted -> O2
+- inferReturnTypes PropertyRef signature x9 call sites
+- LLVMDIUtils: extended DI API parameters
+- third_party/nvidia: -Werror fixes (DenseTypedElementsAttr,
+  BarrierOp), MCContext ctor, MCAsmParser 3-arg form
+- third_party/amd: TargetInfo/TargetUtils/Dialect adjustments,
+  AMDGPUTargetParser include
+
+Verified on RISC-V 9700 (gfx1201): TRITON_OK (import + GPU smoke
+test); full vLLM stack builds with this tree.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 604b942e18af20fe396cac75c29f2482e4a96efd..c43d1dd3b03bd1322a3ad6caa1abe3d1751c05b0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -17,7 +17,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+ 
+ # Options
+ option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
+-option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
++option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" OFF)
+ option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
+ option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
+ option(TRITON_OFFLINE_BUILD "Build without downloading dependencies" OFF)
+@@ -114,6 +114,11 @@ include(TableGen) # required by AddMLIR
+ include(AddLLVM)
+ include(AddMLIR)
+ 
++# riscv64 wheel: .md doc generation useless and errors (multi-dialect td without -dialect) — neuter
++function(add_mlir_doc)
++endfunction()
++
++
+ # Utilities
+ function(add_triton_object name)
+   cmake_parse_arguments(ARG "" "" "DEPENDS;LINK_LIBS" ${ARGN})
+@@ -228,6 +233,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
+   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
+   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
+   set(TRITON_LIBRARIES
++    # riscv64 wheel: LLVM shared monolith FIRST - all LLVM refs resolve
++    # dynamically so NO static LLVM member (e.g. PassBuilder.o from
++    # libLLVMPasses.a) gets embedded into libtriton.so; embedding caused
++    # duplicate cl::opt registration crash at import
++    ${LLVM_LIBRARY_DIR}/libLLVM.so
+     ${triton_libs}
+     ${triton_plugins}
+ 
+@@ -257,7 +267,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
+ 
+     # LLVM
+     LLVMPasses
+-    LLVMNVPTXCodeGen
++    ${LLVM_LIBRARY_DIR}/libLLVMNVPTXCodeGen.a
++    ${LLVM_LIBRARY_DIR}/libLLVMNVPTXDesc.a
++    ${LLVM_LIBRARY_DIR}/libLLVMNVPTXInfo.a
+     # LLVMNVPTXAsmPrinter
+     LLVMAMDGPUCodeGen
+     LLVMAMDGPUAsmParser
+diff --git a/include/triton/Dialect/Gluon/IR/GluonDialect.td b/include/triton/Dialect/Gluon/IR/GluonDialect.td
+index 37e55f12ed66068492081217d1d3737430d0704d..ce33863baa33e2e0abb42fba40a2eb8a81cae4af 100644
+--- a/include/triton/Dialect/Gluon/IR/GluonDialect.td
++++ b/include/triton/Dialect/Gluon/IR/GluonDialect.td
+@@ -16,7 +16,6 @@ def Gluon_Dialect : Dialect {
+     "mlir::gpu::GPUDialect",
+   ];
+   let useDefaultAttributePrinterParser = 1;
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif
+diff --git a/include/triton/Dialect/Triton/IR/Dialect.h b/include/triton/Dialect/Triton/IR/Dialect.h
+index db54dcd708cfd61631ac66e9d287ed2d54ee1a32..545b7709d9c5e36715f190c55ba3b0a6a9994fe5 100644
+--- a/include/triton/Dialect/Triton/IR/Dialect.h
++++ b/include/triton/Dialect/Triton/IR/Dialect.h
+@@ -25,7 +25,7 @@ namespace mlir {
+ namespace triton {
+ 
+ struct GlobalMemory : public SideEffects::Resource::Base<GlobalMemory> {
+-  StringRef getName() final { return "<GlobalMemory>"; }
++  StringRef getName() const final { return "<GlobalMemory>"; }
+ };
+ 
+ class DialectInferLayoutInterface
+diff --git a/include/triton/Dialect/Triton/IR/TritonDialect.td b/include/triton/Dialect/Triton/IR/TritonDialect.td
+index d0e25946b518529245865457862168bc84fde66b..702bf2df1dfee3ce4ee9e9e796a2b46747d16994 100644
+--- a/include/triton/Dialect/Triton/IR/TritonDialect.td
++++ b/include/triton/Dialect/Triton/IR/TritonDialect.td
+@@ -51,7 +51,6 @@ def Triton_Dialect : Dialect {
+ 
+   let hasConstantMaterializer = 1;
+   let useDefaultTypePrinterParser = 1;
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ include "triton/Dialect/Triton/IR/TritonTypes.td"
+diff --git a/include/triton/Dialect/TritonGPU/IR/Dialect.h b/include/triton/Dialect/TritonGPU/IR/Dialect.h
+index 47f7dd0ebf3256486f439d0d425ce1753d3e8c37..7376eecbbac67c12c0796767d88c11a15cc9b87c 100644
+--- a/include/triton/Dialect/TritonGPU/IR/Dialect.h
++++ b/include/triton/Dialect/TritonGPU/IR/Dialect.h
+@@ -96,7 +96,7 @@ using LinearEncodingCache = Cache<CacheKey, LinearEncodingAttr>;
+ 
+ namespace mlir::triton::gpu {
+ struct SharedMemory : public SideEffects::Resource::Base<SharedMemory> {
+-  StringRef getName() final { return "<SharedMemory>"; }
++  StringRef getName() const final { return "<SharedMemory>"; }
+ };
+ 
+ // Convert a distributed layout to a linear encoding
+diff --git a/include/triton/Dialect/TritonGPU/IR/TritonGPUDialect.td b/include/triton/Dialect/TritonGPU/IR/TritonGPUDialect.td
+index 3169dc451f8aed6b208d2887028c4df6f64f375f..7863c089a1a8fc5259ccf80681aa3af01c62b9b3 100644
+--- a/include/triton/Dialect/TritonGPU/IR/TritonGPUDialect.td
++++ b/include/triton/Dialect/TritonGPU/IR/TritonGPUDialect.td
+@@ -35,7 +35,6 @@ def TritonGPU_Dialect : Dialect {
+ 
+   let useDefaultTypePrinterParser = 1;
+   let useDefaultAttributePrinterParser = 1;
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif
+diff --git a/include/triton/Dialect/TritonNvidiaGPU/IR/Dialect.h b/include/triton/Dialect/TritonNvidiaGPU/IR/Dialect.h
+index 679d506d814453a3b097118942b3749e5eb1017f..1316a38c18ff26867033c92d4f3780c482ec2aa1 100644
+--- a/include/triton/Dialect/TritonNvidiaGPU/IR/Dialect.h
++++ b/include/triton/Dialect/TritonNvidiaGPU/IR/Dialect.h
+@@ -69,7 +69,7 @@ inline bool getModuleTwoCTAs(Operation *op) {
+ }
+ 
+ struct TensorMemory : public SideEffects::Resource::Base<TensorMemory> {
+-  StringRef getName() final { return "<TensorMemory>"; }
++  StringRef getName() const final { return "<TensorMemory>"; }
+ };
+ 
+ struct TMemAllocation {
+diff --git a/include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUDialect.td b/include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUDialect.td
+index a185e18071ad595753cd0cea328bfff2ba5cd453..25d1a0ffb11a2d1a17e8511a454c8b303926ae62 100644
+--- a/include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUDialect.td
++++ b/include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUDialect.td
+@@ -43,7 +43,6 @@ def TritonNvidiaGPU_Dialect : Dialect {
+ 
+   let useDefaultAttributePrinterParser = 1;
+   let useDefaultTypePrinterParser = 1;
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif
+diff --git a/lib/Dialect/Triton/IR/Ops.cpp b/lib/Dialect/Triton/IR/Ops.cpp
+index 85e366c146e4da388c04bd80e67ceb0790be2561..4a62e0a744f8365f1e11f07760b842665823a3ff 100644
+--- a/lib/Dialect/Triton/IR/Ops.cpp
++++ b/lib/Dialect/Triton/IR/Ops.cpp
+@@ -263,7 +263,7 @@ TransOp::inferReturnTypes(MLIRContext *context, std::optional<Location> loc,
+ LogicalResult
+ DotOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
+                         ValueRange operands, DictionaryAttr attributes,
+-                        OpaqueProperties properties, RegionRange regions,
++                        PropertyRef properties, RegionRange regions,
+                         SmallVectorImpl<Type> &inferredReturnTypes) {
+   // type is the same as the accumulator
+   auto accTy = cast<RankedTensorType>(operands[2].getType());
+@@ -461,7 +461,7 @@ inferReduceReturnShape(std::optional<Location> loc, RankedTensorType argTy,
+ LogicalResult
+ ReduceOp::inferReturnTypes(MLIRContext *context, std::optional<Location> loc,
+                            ValueRange operands, DictionaryAttr attributes,
+-                           OpaqueProperties properties, RegionRange regions,
++                           PropertyRef properties, RegionRange regions,
+                            SmallVectorImpl<Type> &inferredReturnTypes) {
+   Properties *prop = properties.as<Properties *>();
+   int axis = prop->axis.getInt();
+@@ -616,7 +616,7 @@ void ScanOp::build(OpBuilder &builder, OperationState &state,
+ LogicalResult
+ ScanOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
+                          ValueRange operands, DictionaryAttr attributes,
+-                         OpaqueProperties properties, RegionRange regions,
++                         PropertyRef properties, RegionRange regions,
+                          SmallVectorImpl<Type> &inferredReturnTypes) {
+   for (auto arg : operands)
+     inferredReturnTypes.push_back(arg.getType());
+@@ -715,7 +715,7 @@ LogicalResult UnsplatOp::verify() {
+ 
+ LogicalResult UnsplatOp::inferReturnTypes(
+     MLIRContext *context, std::optional<Location> location, ValueRange operands,
+-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
++    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+     SmallVectorImpl<Type> &inferredReturnTypes) {
+   auto dstTy = cast<RankedTensorType>(operands[0].getType()).getElementType();
+   inferredReturnTypes.push_back(dstTy);
+@@ -725,7 +725,7 @@ LogicalResult UnsplatOp::inferReturnTypes(
+ //-- ExpandDimsOp --
+ LogicalResult ExpandDimsOp::inferReturnTypes(
+     MLIRContext *context, std::optional<Location> loc, ValueRange operands,
+-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
++    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+     SmallVectorImpl<Type> &inferredReturnTypes) {
+   // infer shape
+   auto arg = operands[0];
+@@ -1354,7 +1354,7 @@ LogicalResult GatherOp::verify() {
+ 
+ LogicalResult GatherOp::inferReturnTypes(
+     MLIRContext *context, std::optional<Location> location, ValueRange operands,
+-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
++    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+     SmallVectorImpl<Type> &inferredReturnTypes) {
+   GatherOpAdaptor adaptor(operands, attributes, properties, regions);
+   auto indicesType = cast<RankedTensorType>(adaptor.getIndices().getType());
+diff --git a/lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp b/lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp
+index 1e7fcea3bc382ff34ee5063a68ace59e9814ef16..399355c900479251a9e705f54e0d9e3fc69163ca 100644
+--- a/lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp
++++ b/lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp
+@@ -46,7 +46,7 @@ namespace nvidia_gpu {
+ // -- WarpGroupDotOp --
+ LogicalResult WarpGroupDotOp::inferReturnTypes(
+     MLIRContext *context, std::optional<Location> location, ValueRange operands,
+-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
++    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+     SmallVectorImpl<Type> &inferredReturnTypes) {
+   // type is the same as the accumulator
+   auto accTy = cast<RankedTensorType>(operands[2].getType());
+@@ -153,7 +153,7 @@ bool WarpGroupDotOp::verifyDims() {
+ // -- WarpGroupDotWaitOp --
+ LogicalResult WarpGroupDotWaitOp::inferReturnTypes(
+     MLIRContext *context, std::optional<Location> location, ValueRange operands,
+-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
++    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+     SmallVectorImpl<Type> &inferredReturnTypes) {
+   for (Value operand : operands)
+     inferredReturnTypes.push_back(operand.getType());
+diff --git a/lib/Target/LLVMIR/LLVMDIUtils.cpp b/lib/Target/LLVMIR/LLVMDIUtils.cpp
+index 98c5ba11aba5afc8492de0f8dafb622878f46ee7..d749a00c3ddd48cd805770e78d444a75a0e19e5c 100644
+--- a/lib/Target/LLVMIR/LLVMDIUtils.cpp
++++ b/lib/Target/LLVMIR/LLVMDIUtils.cpp
+@@ -68,7 +68,8 @@ LLVM::DITypeAttr LLVMDIUtils::convertPtrType(MLIRContext *context,
+   LLVM::DITypeAttr diElTypeAttr = convertType(context, pointeeType);
+   LLVM::DITypeAttr diTypeAttr = mlir::LLVM::DIDerivedTypeAttr::get(
+       context, llvm::dwarf::DW_TAG_pointer_type,
+-      mlir::StringAttr::get(context, "pointer"), diElTypeAttr, sizeInBits,
++      mlir::StringAttr::get(context, "pointer"), /*file=*/nullptr,
++      /*line=*/0, /*scope=*/nullptr, diElTypeAttr, sizeInBits,
+       /*alignInBits=*/0, /*offset=*/0, addrSpace, mlir::LLVM::DIFlags::Zero,
+       /*extra data=*/nullptr);
+   return diTypeAttr;
+@@ -95,7 +96,7 @@ LLVM::DITypeAttr LLVMDIUtils::convertStructType(MLIRContext *context,
+       mlir::StringAttr::get(context, "struct"), fileAttr, /*line=*/line,
+       /*scope=*/fileAttr, /*baseType=*/nullptr, mlir::LLVM::DIFlags::Zero,
+       sizeInBits, /*alignInBits=*/0, /*dataLocation=*/nullptr, /*rank=*/nullptr,
+-      /*allocated=*/nullptr, /*associated=*/nullptr, elTypes);
++      /*allocated=*/nullptr, /*associated=*/nullptr, /*identifier=*/nullptr, /*discriminator=*/nullptr, elTypes);
+ }
+ 
+ LLVM::DITypeAttr LLVMDIUtils::convertArrayType(MLIRContext *context,
+@@ -115,7 +116,7 @@ LLVM::DITypeAttr LLVMDIUtils::convertArrayType(MLIRContext *context,
+       mlir::StringAttr::get(context, "array"), fileAttr, /*line=*/line,
+       /*scope=*/fileAttr, /*baseType=*/baseType, mlir::LLVM::DIFlags::Zero,
+       sizeInBits, /*alignInBits=*/0, /*dataLocation=*/nullptr, /*rank=*/nullptr,
+-      /*allocated=*/nullptr, /*associated=*/nullptr, elTypes);
++      /*allocated=*/nullptr, /*associated=*/nullptr, /*identifier=*/nullptr, /*discriminator=*/nullptr, elTypes);
+ }
+ 
+ std::optional<unsigned> LLVMDIUtils::calcBitWidth(mlir::Type type) {
+diff --git a/python/src/llvm.cc b/python/src/llvm.cc
+index fa93102ff7ba62578441f89cff469f69f89aa2f3..460bdb9e6fd802fcc153d638795b516b9034f8ad 100644
+--- a/python/src/llvm.cc
++++ b/python/src/llvm.cc
+@@ -133,8 +133,6 @@ createTargetMachine(llvm::Module *module, std::string proc,
+   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
+   if (enable_fp_fusion)
+     opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
+-  opt.NoInfsFPMath = false;
+-  opt.NoNaNsFPMath = true;
+   opt.TrapUnreachable = true;
+   opt.MCOptions.AsmVerbose = true;
+   opt.MCOptions.PreserveAsmComments = true;
+@@ -607,8 +605,8 @@ void init_triton_llvm(py::module &&m) {
+   m.attr("OPTIMIZE_O1") = llvm::OptimizationLevel::O1;
+   m.attr("OPTIMIZE_O2") = llvm::OptimizationLevel::O2;
+   m.attr("OPTIMIZE_O3") = llvm::OptimizationLevel::O3;
+-  m.attr("OPTIMIZE_Os") = llvm::OptimizationLevel::Os;
+-  m.attr("OPTIMIZE_Oz") = llvm::OptimizationLevel::Oz;
++  m.attr("OPTIMIZE_Os") = llvm::OptimizationLevel::O2;
++  m.attr("OPTIMIZE_Oz") = llvm::OptimizationLevel::O2;
+ 
+   m.def(
+       "to_module",
+diff --git a/third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h b/third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h
+index d1421435a5685a3a1620f8d285927f569cee7e39..bc74c272e753fd54d08e5f090ea769f9745b8e27 100644
+--- a/third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h
++++ b/third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h
+@@ -35,7 +35,7 @@
+ 
+ namespace mlir::triton::amd {
+ struct L2Cache : public SideEffects::Resource::Base<L2Cache> {
+-  StringRef getName() final { return "<AMDGPU::L2Cache>"; }
++  StringRef getName() const final { return "<AMDGPU::L2Cache>"; }
+ };
+ } // namespace mlir::triton::amd
+ 
+diff --git a/third_party/amd/include/Dialect/TritonAMDGPU/IR/TritonAMDGPUDialect.td b/third_party/amd/include/Dialect/TritonAMDGPU/IR/TritonAMDGPUDialect.td
+index 65d8be745de18b312904741663a840404df16a46..a8ebb676b9aed364b52f5bd28558c571e88e34af 100644
+--- a/third_party/amd/include/Dialect/TritonAMDGPU/IR/TritonAMDGPUDialect.td
++++ b/third_party/amd/include/Dialect/TritonAMDGPU/IR/TritonAMDGPUDialect.td
+@@ -37,7 +37,6 @@ def TritonAMDGPU_Dialect : Dialect {
+   let dependentDialects = ["triton::TritonDialect"];
+ 
+   let useDefaultAttributePrinterParser = 1;
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif
+diff --git a/third_party/amd/lib/Dialect/TritonAMDGPU/IR/Dialect.cpp b/third_party/amd/lib/Dialect/TritonAMDGPU/IR/Dialect.cpp
+index 5fdf2bc0d43efdf9170c53092bb7e22bd79fcf54..afcfbb48452c999037ab5565a803942247fcb6d8 100644
+--- a/third_party/amd/lib/Dialect/TritonAMDGPU/IR/Dialect.cpp
++++ b/third_party/amd/lib/Dialect/TritonAMDGPU/IR/Dialect.cpp
+@@ -910,7 +910,7 @@ LogicalResult AsyncCopyMbarrierArriveOp::verify() {
+ // prefetch instruction.
+ LogicalResult TDMPrefetchOp::inferReturnTypes(
+     MLIRContext *context, std::optional<Location> location, ValueRange operands,
+-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
++    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+     SmallVectorImpl<Type> &inferredReturnTypes) {
+   TDMPrefetchOp::Adaptor ad(operands, attributes, properties, regions);
+ 
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.h b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.h
+index 543936cd0967e5d51fe5620f9be926d6d714e90b..433372090a011885f658844c0e7b56a170994ac0 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.h
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetInfo.h
+@@ -4,6 +4,7 @@
+ #include "TritonAMDGPUToLLVM/TargetUtils.h"
+ #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
+ #include "llvm/TargetParser/TargetParser.h"
++#include "llvm/TargetParser/AMDGPUTargetParser.h"
+ #include <string>
+ 
+ namespace mlir::triton::AMD {
+diff --git a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp
+index 47c5e30234eb60ead78b22b576e93a7360a10141..0e0c45f58066008b911be5c6f4d6a4223aa4a8ee 100644
+--- a/third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp
++++ b/third_party/amd/lib/TritonAMDGPUToLLVM/TargetUtils.cpp
+@@ -1,3 +1,4 @@
++#include "llvm/TargetParser/AMDGPUTargetParser.h"
+ #include "TritonAMDGPUToLLVM/TargetUtils.h"
+ #include "llvm/TargetParser/TargetParser.h"
+ 
+diff --git a/third_party/amd/python/triton_amd.cc b/third_party/amd/python/triton_amd.cc
+index 43abcf51d244bd98c11115020ce3314a543742c6..08725820ad078bc4f135cd17853c838cf112bc89 100644
+--- a/third_party/amd/python/triton_amd.cc
++++ b/third_party/amd/python/triton_amd.cc
+@@ -444,8 +444,7 @@ void init_triton_amd(py::module &&m) {
+         std::unique_ptr<llvm::MCSubtargetInfo> sti(
+             target->createMCSubtargetInfo(triple, arch, features));
+ 
+-        llvm::MCContext ctx(triple, mai.get(), mri.get(), sti.get(), &srcMgr,
+-                            &mcOptions);
++        llvm::MCContext ctx(triple, *mai, *mri, *sti, &srcMgr);
+         std::unique_ptr<llvm::MCObjectFileInfo> mofi(
+             target->createMCObjectFileInfo(ctx, /*PIC=*/false,
+                                            /*LargeCodeModel=*/false));
+@@ -472,7 +471,7 @@ void init_triton_amd(py::module &&m) {
+         std::unique_ptr<llvm::MCAsmParser> parser(
+             createMCAsmParser(srcMgr, ctx, *mcStreamer, *mai));
+         std::unique_ptr<llvm::MCTargetAsmParser> tap(
+-            target->createMCAsmParser(*sti, *parser, *mcii, mcOptions));
++            target->createMCAsmParser(*sti, *parser, *mcii));
+         if (!tap)
+           throw std::runtime_error("assembler initializtion error");
+ 
+diff --git a/third_party/nvidia/include/Dialect/NVWS/IR/NVWSDialect.td b/third_party/nvidia/include/Dialect/NVWS/IR/NVWSDialect.td
+index 18724a0590668fab0237720b09510dda5cf6938f..92cd3718b06afdcfa8b35800115809695e65b224 100644
+--- a/third_party/nvidia/include/Dialect/NVWS/IR/NVWSDialect.td
++++ b/third_party/nvidia/include/Dialect/NVWS/IR/NVWSDialect.td
+@@ -39,7 +39,6 @@ def NVWS_Dialect : Dialect {
+ 
+   let useDefaultTypePrinterParser = 1;
+   let useDefaultAttributePrinterParser = 1;
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif
+diff --git a/third_party/nvidia/lib/NVGPUToLLVM/NVGPUToLLVMPass.cpp b/third_party/nvidia/lib/NVGPUToLLVM/NVGPUToLLVMPass.cpp
+index 53853b49cadb0395a1e3145fde1051f63343d292..22d4ca60711a7a47b7c3a53d1960e133fe99dc63 100644
+--- a/third_party/nvidia/lib/NVGPUToLLVM/NVGPUToLLVMPass.cpp
++++ b/third_party/nvidia/lib/NVGPUToLLVM/NVGPUToLLVMPass.cpp
+@@ -539,9 +539,9 @@ static Value createTMAlloc(IRRewriter &rewriter, LLVM::LLVMFuncOp func,
+       /*onlyAttachMLIRArgs=*/true);
+   auto voidTy = void_ty(func->getContext());
+   ptxBuilder.launch(rewriter, loc, void_ty(func->getContext()));
+-  NVVM::Barrier0Op::create(rewriter, loc);
++  NVVM::BarrierOp::create(rewriter, loc);
+   Value address = b.load(i32_ty, sharedMem);
+-  NVVM::Barrier0Op::create(rewriter, loc);
++  NVVM::BarrierOp::create(rewriter, loc);
+   address = b.inttoptr(ptr_ty(func.getContext(), 6), address);
+   return address;
+ }
+@@ -567,7 +567,7 @@ void freeTMAlloc(LLVM::LLVMFuncOp func, Value alloc, size_t size, Value pred,
+       NVVM::ClusterArriveOp::create(b, loc, UnitAttr::get(ctx));
+       NVVM::ClusterWaitOp::create(b, loc, UnitAttr::get(ctx));
+     } else {
+-      NVVM::Barrier0Op::create(b, loc);
++      NVVM::BarrierOp::create(b, loc);
+     }
+     PTXBuilder ptxBuilder;
+     // Calculate the predicate in the inline asm to avoid creating long
+diff --git a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ConvertWarpSpecializeToLLVM.cpp b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ConvertWarpSpecializeToLLVM.cpp
+index aedc5c9ee99d0df13b1da5f3418981e9aff64ce6..644f3a3807920f7f2e2b9526812ef58d0eb658c0 100644
+--- a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ConvertWarpSpecializeToLLVM.cpp
++++ b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ConvertWarpSpecializeToLLVM.cpp
+@@ -45,8 +45,8 @@ static void createBarrier(TritonLLVMIRRewriter &b, unsigned barIdx,
+   if (numThreads == 32)
+     LLVM::NVIDIA::createSyncWarp(b.getLoc(), b);
+   else
+-    NVVM::BarrierOp::create(b, b.getLoc(), TypeRange{}, b.i32_val(barIdx),
+-                            b.i32_val(numThreads), {}, Value{});
++    NVVM::BarrierOp::create(b, b.getLoc(), b.i32_val(barIdx),
++                            b.i32_val(numThreads));
+ }
+ 
+ static void createAllBarrier(TritonLLVMIRRewriter &b, unsigned barIdx) {
+@@ -81,7 +81,7 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
+     if (isa<WarpSpecializePartitionsOp>(op))
+       return WalkResult::skip();
+ 
+-    if (auto bar = dyn_cast<NVVM::Barrier0Op>(op)) {
++    if (auto bar = dyn_cast<NVVM::BarrierOp>(op)) {
+       TritonLLVMIRRewriter b(bar.getLoc(), bar);
+       createBarrier(b, kDefaultWarpGroupBarrierIdx, defaultWarpGroupSize);
+       bar.erase();
+@@ -101,7 +101,7 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
+                << " warp group partitions";
+       }
+       unsigned warpGroupSize = threadsPerWarp * op.getPartitionNumWarps()[idx];
+-      partition->walk([&](NVVM::Barrier0Op bar) {
++      partition->walk([&](NVVM::BarrierOp bar) {
+         TritonLLVMIRRewriter b(bar.getLoc(), bar);
+         createBarrier(b, barIdx, warpGroupSize);
+         bar.erase();
+diff --git a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp
+index fc36b3d94aedaabb2ce3854ca1571aeef711ddc5..0786f1fa0e1d7cd7d4f1364152801282fb66e5f1 100644
+--- a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp
++++ b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/ElementwiseOpToLLVM.cpp
+@@ -690,7 +690,7 @@ struct ClampFOpConversion
+     //   %160 = tt.clamp %158, %cst_6, %cst_7
+ 
+     auto getSplatInitializer = [](Value v) -> std::optional<double> {
+-      DenseIntOrFPElementsAttr denseAttr;
++      DenseTypedElementsAttr denseAttr;
+       if (matchPattern(v, m_Constant(&denseAttr))) {
+         if (denseAttr.isSplat()) {
+           return denseAttr.getSplatValue<APFloat>().convertToDouble();
+diff --git a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td b/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
+index 8d35a5ec1091da2e8dc3c5448541e8c3416ebbbe..e476cad96ae1b8a1f178dcd4055d7b70d571202a 100644
+--- a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
++++ b/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
+@@ -14,7 +14,6 @@ def Proton_Dialect : Dialect {
+ 
+   let dependentDialects = [];
+ 
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif
+diff --git a/third_party/proton/Dialect/include/Dialect/ProtonGPU/IR/ProtonGPUDialect.td b/third_party/proton/Dialect/include/Dialect/ProtonGPU/IR/ProtonGPUDialect.td
+index 9fe146f5e7cf5b1974d1965a6a6e79fcfb0b47ca..c63baa38564ff39203ed61b8a7322642ead8643e 100644
+--- a/third_party/proton/Dialect/include/Dialect/ProtonGPU/IR/ProtonGPUDialect.td
++++ b/third_party/proton/Dialect/include/Dialect/ProtonGPU/IR/ProtonGPUDialect.td
+@@ -22,7 +22,6 @@ def ProtonGPU_Dialect : Dialect {
+ 
+   let useDefaultTypePrinterParser = 1;
+   let useDefaultAttributePrinterParser = 1;
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif  // PROTONGPU_DIALECT

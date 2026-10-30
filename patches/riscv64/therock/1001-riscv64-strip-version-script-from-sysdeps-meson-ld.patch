@@ -1,0 +1,286 @@
+From 07eb24b33e4d20f7cddcea78ec8a7c6d837a8de8 Mon Sep 17 00:00:00 2001
+From: riscv-port <riscv-port@local>
+Date: Sat, 12 Sep 2026 22:21:23 +0800
+Subject: [PATCH] riscv64: strip --version-script from sysdeps meson LDFLAGS;
+ add build doc
+
+meson 1.12 sanity check applies link args twice; riscv64 binutils 2.46 rejects duplicated version tags (x86 ld tolerates). Keep -rpath parts, drop --version-script (rocm_sysdeps SONAME + RPATH isolation suffices). 8 sysdeps CMakeLists + doc; rocm-systems gitlink -> integrated commit 1435a72cc3.
+
+diff --git a/TheRock10.0-9700-Riscv-build.md b/TheRock10.0-9700-Riscv-build.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ddac69758d3232efc84fcca27a1f486e9bd5964
+--- /dev/null
++++ b/TheRock10.0-9700-Riscv-build.md
+@@ -0,0 +1,160 @@
++# TheRock 10.0 RISC-V 移植与构建记录（AMD R9700 / gfx120X-all）
++
++> 本文档记录在 RISC-V 平台上基于 TheRock 10.0 构建 ROCm 最小组件集（gfx120X-all，目标 AMD R9700 / gfx1201）的完整过程，作为后续构建的基线说明。
++> 记录日期：2026-09-12（持续更新）
++
++## 1. 目标
++
++- 以 TheRock 10.0（`therock-10.0` tag）为构建框架
++- 以 RISC-V-7.1.1（`/home/ubuntu/work/GitlabLeo/RISC-V-7.1.1`，内部 GitLab `rv-rocm/*`）的既有 RISC-V 适配为移植源
++- RISC-V native 构建最小组件集：`gfx120X-all`（AMD R9700 / gfx1201 / RDNA4）
++- GPU 目标采用 TheRock 10.0 原生实现（10.0 原生已支持 gfx1201）
++- 阶段目标：M2 = build exit 0；M3 = 冒烟验证（rocminfo 显示 gfx1201 + HIP vectorAdd 通过）
++
++## 2. 构建环境
++
++| 项 | 值 |
++|---|---|
++| 主机 | 10.10.128.103（riscv64 native，80 核 / 121GB RAM / 磁盘空闲 ~1.2TB） |
++| OS | Ubuntu (riscv64) |
++| 工具链 | gcc 15.2.0 / binutils 2.46 / cmake 4.2.3 / ninja 1.13.2 / Python 3.14.4 |
++| meson | 1.12.0（`pip3 install --break-system-packages --user meson` → `~/.local/bin/meson`，**构建必需**） |
++| GPU | AMD R9700（gfx1201，gfx120X-all family） |
++
++apt 补充包（BUNDLE_SYSDEPS=OFF 试验期间安装，保留无害）：
++`pkg-config zlib1g-dev libzstd-dev liblzma-dev libexpat1-dev libpciaccess-dev libnuma-dev libcap-dev libncurses-dev libedit-dev libxml2-dev libelf-dev`
++
++## 3. 仓库基线（P0）
++
++- TheRock superproject：`/home/ubuntu/work/GitlabLeo/TheRock`，origin → `https://github.com/ROCm/TheRock.git` @ `therock-10.0`（16adc4d87）
++- 10 个 submodule 全部对齐 therock-10.0 pin（amd-llvm@8f497e09、rocm-libraries@8d1ae90e、rocm-systems@6b0e43f341 等）
++- **关键修复**：清除 `~/.gitconfig` 中 4 组 insteadOf 规则（曾将 github.com/ROCm/* 劫持到内网 GitLab，导致所有"GitHub 拉取"实际打内网）；备份 `~/.gitconfig.bak-20260912`。仅保留 gh-proxy 传输代理规则（不改变源，仅加速）
++- 集成分支命名：各仓库内 `riscv/10.0-port`
++
++## 4. 适配移植决策（P1/P2）
++
++适配源 7 仓库中，进入 TheRock 10.0 范围的是前 3 项（其余 pytorch/triton/vllm/rocm 为推理栈下游，范围外）：
++
++| 仓库 | 7.1.1 适配 | 10.0 处理 | 结论 |
++|---|---|---|---|
++| rocm-systems | 2 提交（+29k：rocm-core/rocminfo/clr/rocr-runtime） | pin 6b0e43f341 + 8d3267503c + 1435a72cc3（build.stale/ 垃圾已过滤） | **移植**，提交在 submodule `riscv/10.0-port` |
++| llvm-project | 3 提交（7 文件 +544） | 冲突三角化后 4 处全部采用 10.0 原生实现 | **零补丁**：comgr `ArrayRef<unsigned char>` 对 riscv64 char 无符号性免疫；sanitizer termio 上游已移除；OCL.cmake 已有 CMP0053/cmake4 守卫 |
++| rocm-libraries | 2 提交（+17k：hipblaslt/hipblas-common 的 gfx1201 配置） | 回退至 pin（10.0 原生支持 gfx1201，用户指示用原生） | **零补丁**，补丁存档可随时恢复 |
++
++补丁存档：`/home/ubuntu/work/GitlabLeo/adaptation-patches/{llvm-project,rocm-libraries,rocm-systems}/`（format-patch 产物）；
++脏状态备份：`/home/ubuntu/work/GitlabLeo/submodule-dirty-backup-20260912/`
++
++## 5. 配置（P3-configure，exit 0）
++
++```bash
++cd /home/ubuntu/work/GitlabLeo/TheRock
++cmake -B build -GNinja \
++  -DTHEROCK_AMDGPU_FAMILIES=gfx120X-all \
++  -DTHEROCK_ENABLE_CORE=ON \
++  -DTHEROCK_ENABLE_MATH_LIBS=ON \
++  -DTHEROCK_ENABLE_HOST_MATH=ON \
++  -DTHEROCK_ENABLE_COMM_LIBS=OFF \
++  -DTHEROCK_ENABLE_ML_LIBS=OFF \
++  -DTHEROCK_ENABLE_MEDIA_LIBS=OFF \
++  -DTHEROCK_ENABLE_STORAGE_LIBS=OFF \
++  -DTHEROCK_ENABLE_PROFILER=OFF \
++  -DTHEROCK_ENABLE_DC_TOOLS=OFF \
++  -DTHEROCK_ENABLE_DEBUG_TOOLS=OFF \
++  -DTHEROCK_ENABLE_EMULATION=OFF \
++  -DTHEROCK_ENABLE_HOTSWAP=OFF \
++  -DTHEROCK_ENABLE_WSL=OFF
++```
++
++- gfx1201（RX 9070 / R9700）正确识别，Dist bundle: gfx120X-all
++- `THEROCK_BUNDLE_SYSDEPS` 最终为 **ON**（捆绑 sysdeps；rocm-kpack 依赖捆绑 zstd，见 6.3）
++
++## 6. 构建与 riscv64 修复循环（P3-build，核心章节）
++
++启动方式：`nohup /tmp/p3_build.sh`（内容 = `ninja -C build`；日志 `/home/ubuntu/work/GitlabLeo/p3-build.log`，按 `=== build vN ===` 标记分段）
++
++### 6.1 修复 #1：meson 缺失
++- 现象：configure 阶段 `CMakeLists.txt:403` 报需要 meson
++- 修复：`pip3 install --break-system-packages --user meson`（1.12.0）
++
++### 6.2 修复 #2：libpciaccess —— meson sanity check 重复应用 version-script（本移植最核心的 riscv64 问题）
++- 现象：`[therock-libpciaccess] meson setup` 报 `ERROR: Compiler /usr/bin/cc cannot compile programs.`
++- 根因链（全部实验证实）：
++  1. TheRock sysdeps CMakeLists 经 `env LDFLAGS=-Wl,--version-script=version.lds` 注入符号版本脚本（tag：`AMDROCM_SYSDEPS_1.0`）
++  2. **meson 1.12 的 sanity check 把 link args 应用两次**——env LDFLAGS 与显式 `-Dc_link_args` 均如此（用 `-Dc_link_args=-v` 实验，sanity 命令行出现 `-v -v`）
++  3. **riscv64 binutils 2.46 的 ld 对重复 version tag 直接报错**（x86 ld 容忍重复 → 上游 CI 从未暴露此问题）
++- 排除路径（均实测不可行）：
++  - meson 降级 1.6.1：pip 下载失败（网络），未果
++  - 匿名 version script（去 tag 名）：双应用报 `anonymous version tag cannot be combined with other version tags` —— 任何 version script 双应用都炸
++  - `--reconfigure` 预播种 sanity 缓存：reconfigure **忽略 env LDFLAGS 变化**（build.ninja 中 version-script 计数 = 0），脚本进不了真实链接命令
++- 修复：删除 LDFLAGS 中的 version-script 段。代价 = sysdeps 符号不版本化；RPATH 私有目录 + `rocm_sysdeps_*` 独立 SONAME 已保证符号隔离。
++  参考：RISC-V-7.1.1 团队用 apt 系统包方案（其 install_rocm_drm.sh），本就无版本化，实践证明可行
++
++### 6.3 修复 #3：rocm-kpack（BUNDLE_SYSDEPS=OFF 弯路）
++- 排查 #2 期间临时改 `THEROCK_BUNDLE_SYSDEPS=OFF`（系统包路线）→ 构建推进后 `rocm-kpack configure` 失败：kpack 硬依赖**捆绑 zstd**（super-project 的 zstd stub 指向捆绑 dist 路径）；kpack = core-kpack artifact，被 core 组件依赖，无独立开关
++- 修复：恢复 `THEROCK_BUNDLE_SYSDEPS=ON`，sysdeps 走捆绑路线 + #2/#4 的 version-script 剥离
++
++### 6.4 修复 #4：其余 sysdeps 的拆分形式 version-script
++- libdrm 失败后全面审计发现：8 个文件以**拆分形式**注入（`"LDFLAGS=-Wl,-rpath=... -Wl,--version-script=..."`），精确 grep（`LDFLAGS=-Wl,--version-script`）会漏检
++- 修复：保留 rpath 段（真实构建需要），仅剥离 version-script 尾段：`sed -i 's/ -Wl,--version-script=.*"/"/'`
++- 涉及文件（8 个，均属 superproject，随本文档一并提交，见第 8 节）：
++  `libpciaccess`（整行删）、`libdrm`、`amd-mesa`（×2 行）、`ncurses`、`hwloc`、`mpfr`、`gmp`、`expat`
++
++### 6.5 当前状态（截至 2026-09-12，build v4 轮询：[32/296] RUNNING，FAILED=0）
++- v4 = BUNDLE_SYSDEPS=ON + 8 文件 version-script 剥离 + sysdeps 干净重建
++- 已通过并推进：libpciaccess、rocm-kpack、elfutils、host-blas、libdivide、numactl、zstd 等组件 stage 安装
++- 待观察：amd-mesa（大组件）、amd-llvm 编译（长尾）、rocm-systems 各组件（clr/HIP、rocminfo、rocm_smi64）
++- 后续：持续 fix loop → M2（build exit 0）→ P4 冒烟（rocminfo gfx1201 + HIP vectorAdd）
++
++## 7. 日志与关键文件
++
++| 路径 | 说明 |
++|---|---|
++| `/home/ubuntu/work/GitlabLeo/p3-build.log` | 构建主日志（v1-v4 按 `=== build vN ===` 分段） |
++| `/home/ubuntu/work/GitlabLeo/TheRock/build/logs/therock-<组件>_build.log` | 各组件详细日志 |
++| `/home/ubuntu/work/GitlabLeo/adaptation-patches/` | 7.1.1 适配补丁存档（format-patch） |
++| `/home/ubuntu/work/GitlabLeo/submodule-dirty-backup-20260912/` | 7.1.1 脏状态备份（8 patch） |
++| `/tmp/p3_build.sh` | nohup 构建脚本（含 `export PATH=$HOME/.local/bin:$PATH`） |
++
++## 8. GitLab 基线备份
++
++内部 GitLab：`ssh://git@10.128.118.42:9022/rv-rocm/`（Web：gitlab.metastonecorp.com）
++
++**备份内容 = 基线源码（不含 build/ 产物；build/ 为一次性本地产物，可由源码复现）**：
++
++| 内容 | 目标仓库 | 分支 |
++|---|---|---|
++| TheRock superproject（含 8 个 sysdeps riscv64 修复 + 本文档） | `rv-rocm/TheRock.git` | `riscv/10.0-port` |
++| rocm-systems（含 2 个 RISC-V 集成提交） | `rv-rocm/rocm-systems.git` | `riscv/10.0-port` |
++
++- llvm-project / rocm-libraries **无需备份**：零修改，pin 提交存在于 GitHub 上游
++- `.gitmodules` 保持指向 `github.com/ROCm`（用户约束）；注意 rocm-systems 的集成提交（1435a72cc3）仅存在于 rv-rocm 副本，重建时按第 9 节取用
++- M2（build exit 0）通过后建议补打 tag（如 `riscv-baseline-20260912`）并再次推送快照
++
++## 9. 从基线重建步骤
++
++```bash
++# 1) 克隆基线
++git clone -b riscv/10.0-port ssh://git@10.128.118.42:9022/rv-rocm/TheRock.git
++cd TheRock
++
++# 2) submodules：.gitmodules 指向 GitHub（走 gh-proxy 传输代理）。
++#    rocm-systems 的集成提交仅存于内网，先将其 URL 覆盖为内网副本：
++git config submodule.rocm-systems.url ssh://git@10.128.118.42:9022/rv-rocm/rocm-systems.git
++git submodule update --init --depth 1
++git config --unset submodule.rocm-systems.url   # 可选：恢复 .gitmodules 的 GitHub 指向
++
++# 3) 环境
++pip3 install --break-system-packages --user meson
++export PATH=$HOME/.local/bin:$PATH
++
++# 4) 配置（第 5 节命令）+ 构建
++ninja -C build
++```
++
++## 10. 用户决策与约束记录
++
++- "后台进行，需要我决定时弹出消息"
++- "TheRock 10.0如果已经原生支持AMD 9700，那就用原生的"
++- "在迭代中，尽量参考/home/ubuntu/work/GitlabLeo/RISC-V-7.1.1中的已经做过的适配，需要的就移植到TheRock 10.0中去"
++- 子模块"定向到https://github.com/ROCm/TheRock/tree/therock-10.0 而不是：https://gitlab.metastonecorp.com/rv-rocm"
++- 构建基线备份到内部 GitLab（本文档第 8 节），作为后续构建的基线版本
+diff --git a/third-party/sysdeps/common/expat/CMakeLists.txt b/third-party/sysdeps/common/expat/CMakeLists.txt
+index 235d634945a3afe3ba63570a45a75109dae29dd9..cae04f325a71a01a3ad09947cb1090835e0adbd8 100644
+--- a/third-party/sysdeps/common/expat/CMakeLists.txt
++++ b/third-party/sysdeps/common/expat/CMakeLists.txt
+@@ -92,7 +92,7 @@ add_custom_target(
+       "PKG_CONFIG_PATH=$ENV{PKG_CONFIG_PATH}"
+       # Escaping: Double $ to satisfy CMake, then double $ to satisfy configure,
+       # then escaped single quotes to make it to the linker command line.
+-      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -Wl,-rpath=\\'\\$$\\$$ORIGIN\\' -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
++      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -Wl,-rpath=\\'\\$$\\$$ORIGIN\\'"
+       "CPPFLAGS=${EXTRA_CPPFLAGS}"
+       --
+     "${SOURCE_DIR}/configure"
+diff --git a/third-party/sysdeps/common/gmp/CMakeLists.txt b/third-party/sysdeps/common/gmp/CMakeLists.txt
+index 91febb8985f8f64673c63bbac4cff60bd1a674cf..6bcf06b0ea4c1b69058263e7a844f35591b96c3a 100644
+--- a/third-party/sysdeps/common/gmp/CMakeLists.txt
++++ b/third-party/sysdeps/common/gmp/CMakeLists.txt
+@@ -91,7 +91,7 @@ add_custom_target(
+       #
+       # '$$ORIGIN' does make its way to LDFLAGS correctly, but doesn't survive
+       # making it to the shared library's RUNPATH.
+-      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -Wl,-rpath=\\'\\$$\\$$ORIGIN\\' -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
++      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -Wl,-rpath=\\'\\$$\\$$ORIGIN\\'"
+       "CPPFLAGS=${EXTRA_CPPFLAGS}"
+       --
+     "${SOURCE_DIR}/configure"
+diff --git a/third-party/sysdeps/common/hwloc/CMakeLists.txt b/third-party/sysdeps/common/hwloc/CMakeLists.txt
+index 1411ab5101759382e9f7c71b77b50ac570306637..bd069a50d10992bf061737e042b1ebe673507969 100644
+--- a/third-party/sysdeps/common/hwloc/CMakeLists.txt
++++ b/third-party/sysdeps/common/hwloc/CMakeLists.txt
+@@ -107,7 +107,7 @@ add_custom_target(
+     "${CMAKE_COMMAND}" -E env
+       "PKG_CONFIG_PATH=${PCIACCESS_PREFIX}/lib/pkgconfig:${NUMA_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}"
+       # Apply symbol versioning via version.lds. RPATH is set post-install via patch_install.py.
+-      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -L${PCIACCESS_PREFIX}/lib -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
++      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -L${PCIACCESS_PREFIX}/lib"
+       "CPPFLAGS=-I${PCIACCESS_PREFIX}/include -I${NUMA_PREFIX}/include"
+       --
+     "${SOURCE_DIR}/configure"
+diff --git a/third-party/sysdeps/common/mpfr/CMakeLists.txt b/third-party/sysdeps/common/mpfr/CMakeLists.txt
+index 070f6d29ba241cf626b34ac2add55d3c41502be3..be47a7353173319fdbf79a06b2b5dd07706656d4 100644
+--- a/third-party/sysdeps/common/mpfr/CMakeLists.txt
++++ b/third-party/sysdeps/common/mpfr/CMakeLists.txt
+@@ -111,7 +111,7 @@ add_custom_target(
+       # escaping going on (cmake, configure, shell, libtool), and making
+       # our $ORIGIN string survive through all that is complex and
+       # potentially fragile. We use a patchelf step instead.
+-      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
++      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS}"
+       --
+     "${SOURCE_DIR}/configure"
+       --prefix "${CMAKE_INSTALL_PREFIX}"
+diff --git a/third-party/sysdeps/common/ncurses/CMakeLists.txt b/third-party/sysdeps/common/ncurses/CMakeLists.txt
+index c8f0d65a4da7949e79d60a3e7249d96ceee10451..c36ad768fa9c35110f3ff8c0fb7a84baeb068b7b 100644
+--- a/third-party/sysdeps/common/ncurses/CMakeLists.txt
++++ b/third-party/sysdeps/common/ncurses/CMakeLists.txt
+@@ -131,7 +131,7 @@ add_custom_target(
+       "PKG_CONFIG_PATH=$ENV{PKG_CONFIG_PATH}"
+       # Escaping: Double $ to satisfy CMake, then double $ to satisfy configure,
+       # then escaped single quotes to make it to the linker command line.
+-      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -Wl,-rpath=\\'\\$$\\$$ORIGIN:\\$$\\$$ORIGIN/../lib\\' -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
++      "LDFLAGS=${CMAKE_SHARED_LINKER_FLAGS} -Wl,-rpath=\\'\\$$\\$$ORIGIN:\\$$\\$$ORIGIN/../lib\\'"
+       # Add -std=gnu17 so workaround GCC 15 build issues for now.
+       # See https://github.com/conan-io/conan-center-index/issues/28083
+       "CPPFLAGS=${EXTRA_CPPFLAGS} -std=gnu17"
+diff --git a/third-party/sysdeps/linux/amd-mesa/CMakeLists.txt b/third-party/sysdeps/linux/amd-mesa/CMakeLists.txt
+index baeef31583272691a0bc6a19a283fdd0b9ac369c..d51f42b3ba826fd8d81396a9025dc740bc5e460d 100644
+--- a/third-party/sysdeps/linux/amd-mesa/CMakeLists.txt
++++ b/third-party/sysdeps/linux/amd-mesa/CMakeLists.txt
+@@ -65,7 +65,7 @@ add_custom_target(
+     # Step 1: Initial meson setup to download libva-2.22.0 subproject
+     # This is required before patching because patch_source.sh modifies files in the libva subproject
+     "${CMAKE_COMMAND}" -E env
+-      "LDFLAGS=-Wl,-rpath='$$ORIGIN' -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
++      "LDFLAGS=-Wl,-rpath='$$ORIGIN'"
+       "CC=${_meson_cc}"
+       "CXX=${_meson_cxx}"
+       --
+@@ -111,7 +111,7 @@ add_custom_target(
+     # Step 3: Reconfigure meson to build from patched source
+     # This ensures the build system uses the modified source files
+     "${CMAKE_COMMAND}" -E env
+-      "LDFLAGS=-Wl,-rpath='$$ORIGIN' -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
++      "LDFLAGS=-Wl,-rpath='$$ORIGIN'"
+       "CC=${_meson_cc}"
+       "CXX=${_meson_cxx}"
+       --
+diff --git a/third-party/sysdeps/linux/libdrm/CMakeLists.txt b/third-party/sysdeps/linux/libdrm/CMakeLists.txt
+index 9e3b96e35cf64eb918308a5bedcc85048bcc248d..5e7ad8d9938f914ba40a8bce5cbfadf874866807 100644
+--- a/third-party/sysdeps/linux/libdrm/CMakeLists.txt
++++ b/third-party/sysdeps/linux/libdrm/CMakeLists.txt
+@@ -82,7 +82,7 @@ add_custom_target(
+     "${CMAKE_COMMAND}" -E chdir "${PATCH_SOURCE_DIR}"
+     "${CMAKE_COMMAND}" -E env
+       # Escaping hack: experimentally determined to persist through the layers.
+-      "LDFLAGS=-Wl,-rpath='$$ORIGIN' -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
++      "LDFLAGS=-Wl,-rpath='$$ORIGIN'"
+       "CC=${_meson_cc}"
+       "CXX=${_meson_cxx}"
+       --
+diff --git a/third-party/sysdeps/linux/libpciaccess/CMakeLists.txt b/third-party/sysdeps/linux/libpciaccess/CMakeLists.txt
+index 78e8a295bef75269c79dcad52b0a58837eece74e..04e0163c8ee8360140866e070a44e52421a9becb 100644
+--- a/third-party/sysdeps/linux/libpciaccess/CMakeLists.txt
++++ b/third-party/sysdeps/linux/libpciaccess/CMakeLists.txt
+@@ -81,7 +81,6 @@ add_custom_target(
+     "${CMAKE_COMMAND}" -E chdir "${SOURCE_DIR}"
+     "${CMAKE_COMMAND}" -E env
+       # Apply symbol versioning via version.lds. RPATH is set post-install via patch_install.py.
+-      "LDFLAGS=-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/version.lds"
+       "CC=${_meson_cc}"
+       "CXX=${_meson_cxx}"
+       --

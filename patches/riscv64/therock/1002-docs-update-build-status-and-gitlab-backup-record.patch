@@ -1,0 +1,54 @@
+From e5028f78f51e2d4e0639a3af59427aa865c0fac2 Mon Sep 17 00:00:00 2001
+From: riscv-port <riscv-port@local>
+Date: Sat, 12 Sep 2026 23:05:54 +0800
+Subject: [PATCH] docs: update build status and GitLab backup record
+
+
+diff --git a/TheRock10.0-9700-Riscv-build.md b/TheRock10.0-9700-Riscv-build.md
+index 9ddac69758d3232efc84fcca27a1f486e9bd5964..3963c8a9788431f0a515a46305fd65a7ecdc5e3e 100644
+--- a/TheRock10.0-9700-Riscv-build.md
++++ b/TheRock10.0-9700-Riscv-build.md
+@@ -99,11 +99,12 @@ cmake -B build -GNinja \
+ - 涉及文件（8 个，均属 superproject，随本文档一并提交，见第 8 节）：
+   `libpciaccess`（整行删）、`libdrm`、`amd-mesa`（×2 行）、`ncurses`、`hwloc`、`mpfr`、`gmp`、`expat`
+ 
+-### 6.5 当前状态（截至 2026-09-12，build v4 轮询：[32/296] RUNNING，FAILED=0）
++### 6.5 当前状态（截至 2026-09-12，build v4：amd-llvm [7885/8512]（~93%），RUNNING，编译失败 = 0）
+ - v4 = BUNDLE_SYSDEPS=ON + 8 文件 version-script 剥离 + sysdeps 干净重建
+-- 已通过并推进：libpciaccess、rocm-kpack、elfutils、host-blas、libdivide、numactl、zstd 等组件 stage 安装
+-- 待观察：amd-mesa（大组件）、amd-llvm 编译（长尾）、rocm-systems 各组件（clr/HIP、rocminfo、rocm_smi64）
+-- 后续：持续 fix loop → M2（build exit 0）→ P4 冒烟（rocminfo gfx1201 + HIP vectorAdd）
++- 已通过：libpciaccess、rocm-kpack、elfutils、host-blas、libdivide、numactl、zstd 等（sysdeps 全部打通）
++- 插曲：simde/grpc 捆绑依赖下载因 S3 瞬时断连失败一次（curl 56 "Failure when receiving data from the peer"）；已手动预下载到目标路径（SHA256 校验），ninja 下一轮（v5）自动重试
++- 待观察：amd-llvm 收尾（长尾）→ rocm-systems 各组件（clr/HIP、rocminfo、rocm_smi64）
++- 后续：v4 退出 → v5 重试下载戳收尾 → M2（build exit 0）→ P4 冒烟（rocminfo gfx1201 + HIP vectorAdd）
+ 
+ ## 7. 日志与关键文件
+ 
+@@ -121,10 +122,13 @@ cmake -B build -GNinja \
+ 
+ **备份内容 = 基线源码（不含 build/ 产物；build/ 为一次性本地产物，可由源码复现）**：
+ 
+-| 内容 | 目标仓库 | 分支 |
+-|---|---|---|
+-| TheRock superproject（含 8 个 sysdeps riscv64 修复 + 本文档） | `rv-rocm/TheRock.git` | `riscv/10.0-port` |
+-| rocm-systems（含 2 个 RISC-V 集成提交） | `rv-rocm/rocm-systems.git` | `riscv/10.0-port` |
++| 内容 | 目标仓库 | 分支 | 状态 |
++|---|---|---|---|
++| TheRock superproject（含 8 个 sysdeps riscv64 修复 + 本文档） | `ssh://git@10.128.118.42:9022/zhengguangchun/riscv-therock.git` | `riscv/10.0-port` | **已推送并核验（07eb24b33）** |
++| rocm-systems（含 2 个 RISC-V 集成提交） | `rv-rocm/rocm-systems.git` | `riscv/10.0-port` | 待推送（本地浅克隆，unshallow 进行中） |
++
++- 原 `rv-rocm/TheRock.git` 为空仓库且要求 Owner/Maintainer 建立默认分支，当前账户无权限（推 main 与分支名均被 pre-receive 拒绝）→ 按用户指示改推 `zhengguangchun/riscv-therock.git`
++- rocm-systems 障碍与解法：本地克隆为 shallow（"shallow update not allowed"）→ 需 unshallow；gh-proxy 一度 403（限流）后恢复；代理 10.192.128.25/.31:10808 均不可达（.25 端口未监听、.31 主机不可达），已记入 `~/.bashrc` 但**无有效代理可用**，unshallow 走 gh-proxy
+ 
+ - llvm-project / rocm-libraries **无需备份**：零修改，pin 提交存在于 GitHub 上游
+ - `.gitmodules` 保持指向 `github.com/ROCm`（用户约束）；注意 rocm-systems 的集成提交（1435a72cc3）仅存在于 rv-rocm 副本，重建时按第 9 节取用
+@@ -134,7 +138,7 @@ cmake -B build -GNinja \
+ 
+ ```bash
+ # 1) 克隆基线
+-git clone -b riscv/10.0-port ssh://git@10.128.118.42:9022/rv-rocm/TheRock.git
++git clone -b riscv/10.0-port ssh://git@10.128.118.42:9022/zhengguangchun/riscv-therock.git
+ cd TheRock
+ 
+ # 2) submodules：.gitmodules 指向 GitHub（走 gh-proxy 传输代理）。

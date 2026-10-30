@@ -1,0 +1,103 @@
+# ============================================================================
+# rvocs-hcs-amd version and baseline manifest (human-readable "authoritative
+# notes"; machine-readable values live in config/)
+# ----------------------------------------------------------------------------
+# Single sources of truth:
+#   1) upstream code baseline = the gitlink of the upstream/therock submodule
+#      (.gitmodules + git index)
+#   2) machine-readable parameters = config/defaults.sh and config/gpu-targets.sh
+# This file is documentation and index only; it does not take part in builds.
+# To change the baseline use scripts/tools/baseline.sh, which updates both the
+# submodule gitlink and this file so the two cannot drift.
+# ============================================================================
+version: 1
+
+project:
+  name: rvocs-hcs-amd
+  purpose: build ROCm (the TheRock super-project) into a deployable Docker image for AMD GPUs with one command
+  branches:
+    master: single branch; x86_64 uses the prebuilt path (plus an optional full
+            source path), riscv64 uses the patches/riscv64/ porting layer
+            (the former RISCV-Porting branch was folded into master)
+
+upstream:
+  therock:
+    url: https://github.com/ROCm/TheRock.git
+    submodule_path: upstream/therock
+    ref: therock-10.0                  # tag, branch or commit
+    commit: 16adc4d875fd4f65ea23c7c84e1c66706fde3047
+    role: >-
+      The ROCm/HIP CMake super-project. It owns the unified build, artifact
+      splitting and packaging of the compiler/core/math-libs/ml-libs components.
+      Its internal submodules (rocm-libraries, rocm-systems, third-party, ...)
+      are managed by the repository's own build_tools/fetch_sources.py, so this
+      repository does not pin them again.
+    notes: |
+      - Upstream maintains component-level pins itself, so the "upstream baseline"
+        is the submodule gitlink of this repository.
+      - After changing the baseline you must replay patches/ (RISCV-Porting branch)
+        and run a full build to validate.
+
+release:
+  rocm_version: 10.0.0                 # matches the upstream tag; determines the prebuilt tarball name
+  channel: stable                      # stable | nightly | rc | bkc | dev
+  prebuilt_bundle: gfx120X-all         # bundle name of the prebuilt tarball (= GPU family)
+
+gpu_targets:
+  config: config/gpu-targets.sh
+  default: r9700
+  current_scope: only AMD Radeon AI PRO R9700 is validated (gfx1201 / gfx120X-all)
+  how_to_extend: |
+    Add one gpu_define line to config/gpu-targets.sh, then run
+      ./scripts/build.sh --gpu <new id> --stage all
+    No other script needs to change. If a new model needs a different component
+    set, override THEROCK_ENABLE_* per gpu id in the presets of config/defaults.sh.
+
+framework_sources:            # only needed with --wheel-mode source (riscv64)
+  config: config/sources.sh
+  components: [pytorch, torchvision, triton, vllm]
+  notes: |
+    x86_64 defaults to --wheel-mode pip and uses the official TheRock wheels, so
+    these sources are not fetched.
+    riscv64 source builds use the porting pins below (single branch).
+
+images:
+  kinds:
+    vllm: ROCm + torch/triton/torchvision/vLLM with a vllm serve entrypoint (default artifact)
+    runtime: ROCm userspace only
+  # Naming rule: rvocs-<kind>-therock<rocm major.minor>-<gpu>-<arch>:<repository version>
+  # <gpu> is the GPU id from config/gpu-targets.sh (e.g. r9700), <arch> is the OCI
+  # name (amd64 / arm64 / riscv64), <version> comes from VERSION.
+  tag_scheme: "rvocs-vllm-therock<rocm major.minor>-<gpu>-<arch>:<version>"
+  examples:
+    riscv64_vllm:   rvocs-vllm-therock10.0-r9700-riscv64:v0.1.0
+    x86_64_vllm:    rvocs-vllm-therock10.0-r9700-amd64:v0.1.0
+    runtime:        rvocs-runtime-therock10.0-r9700-riscv64:v0.1.0
+  base_images:
+    x86_64: ubuntu:24.04
+    riscv64: riscv64/ubuntu:26.04
+
+patches:
+  dir: patches        # per-arch patch layers (single branch)
+  layout: patches/<arch>/<component>/<NNNN-name>.patch plus series
+  series_format: plain text identical to a quilt series, one patch file per line (relative to the same directory)
+  components_map: patches/<arch>/components.map (component name -> workspace-relative path)
+
+stages:
+  preflight: environment self-check (disk/memory/toolchain/docker/submodule state)
+  fetch: fetch sources (TheRock submodule and components; torch/triton/vllm on demand)
+  workdir: apply the patches/<arch>/ series
+  build: TheRock: cmake configure + ninja -> upstream/therock/build/dist/rocm
+  wheels: Python stack (pip or source build) -> work/venv-stack + work/wheelhouse
+  image: assemble the context and run docker build (vllm or runtime)
+  verify: in-container smoke checks (GPU checks optional)
+  all: run every stage in platform order
+  prep: = fetch + workdir (only prepare editable, already patched sources)
+
+known_issues: |
+  - A full TheRock source build needs roughly 200 GB of disk and several hours;
+    fetch_sources.py alone is about 30 GB.
+  - kpack unpacking depends on a patched patchelf (upstream <= 0.18.0 can corrupt
+    ELFs whose PHDR sits at the tail); see the checks in scripts/00-preflight.sh.
+  - Images contain userspace only; the host must provide the amdgpu kernel driver
+    and /dev/kfd, /dev/dri.

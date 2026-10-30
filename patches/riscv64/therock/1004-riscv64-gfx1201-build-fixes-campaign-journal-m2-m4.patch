@@ -1,0 +1,677 @@
+From 7a5f100fcfd6789e70578b84f18c56d91414cf18 Mon Sep 17 00:00:00 2001
+From: rv-rocm <rv-rocm@local>
+Date: Tue, 15 Sep 2026 00:18:57 +0800
+Subject: [PATCH] riscv64/gfx1201 build fixes + campaign journal (M2-M4)
+
+- compiler/CMakeLists.txt: quadmath workaround for amd-llvm on riscv64
+- compiler/pre_hook_amd-llvm.cmake: pre-hook adjustments
+- math-libs/CMakeLists.txt + math-libs/BLAS/CMakeLists.txt: proftools/BLAS fixes
+- profiler/CMakeLists.txt: profiler build fix
+- cmake/therock_primlibs_benchmark_deps.cmake: primlibs benchmark deps fix
+- amd-llvm submodule: resolve 7 committed conflict markers in
+  warn-unsafe-buffer-usage tests (take 991d7848b740 side)
+- TheRock10.0-9700-Riscv-build.md: campaign journal sections 12-13
+
+diff --git a/TheRock10.0-9700-Riscv-build.md b/TheRock10.0-9700-Riscv-build.md
+index ac5742a474dbd9e6190c432c73f27d696be563f1..79ead07c375d65b08cc189bc0169e6481cd0ca79 100644
+--- a/TheRock10.0-9700-Riscv-build.md
++++ b/TheRock10.0-9700-Riscv-build.md
+@@ -187,3 +187,444 @@ nohup /tmp/p6_build.sh </dev/null >/dev/null 2>&1 &
+ # 日志仍追加到 /home/ubuntu/work/GitlabLeo/p3-build.log，按 `=== build v6.N ===` 分段
+ # 里程碑：M2 = build exit 0 → P4 冒烟（rocminfo gfx1201 + HIP vectorAdd）
+ ```
++
++## 12. 会话续接（v7 → v8.1，2026-09-13 凌晨）
++
++### 12.1 修复 #7：flang-rt quadmath 在 riscv64 上 fatal erro
++- 现象：v6.4 于 01:15 死于 `[amd-llvm] flang-rt/lib/quadmath/CMakeLists.txt:84: FLANG_RUNTIME_F128_MATH_LIB setting requires quadmath.h to be available: libquadmath`
++- 根因：TheRock 10.0 `compiler/CMakeLists.txt`（原 118 行）硬编码 `-DFLANG_RUNTIME_F128_MATH_LIB=libquadmath`；libquadmath/quadmath.h 为 x86 专属，riscv64 无此库。7.1.1 路线未踩到（不走 TheRock 编排）。riscv64/aarch64 的 long double 即 IEEE binary128（LDBL_MANT_DIG=113），flang-rt 该变量留空时 REAL(16) 走 long double 路径，无需 libquadmath
++- 修复：`compiler/CMakeLists.txt` 在 `therock_cmake_subproject_declare(amd-llvm` 前新增架构守卫变量 `THEROCK_FLANG_F128_MATH_LIB`（x86_64/AMD64/amd64 → libquadmath，其余 → 空串），原硬编码行改引用该变量；备份 `compiler/CMakeLists.txt.bak-quadmath-20260913`
++- 同步清理 v6.4 遗留 stale 状态：amd-llvm CMakeCache 的 `FLANG_RUNTIME_F128_MATH_LIB` 置空、删 `build/compiler/amd-llvm/build/runtimes/`（失败缓存+stamps）、`runtimes-cache-Release.cmake` 去除 FLANG 行、删 EP configure/build stamp
++- 验证：v7 runtimes configure 全过（omp_lib.mod 用刚自举的 flang 生成），flang 重编 160 步完成 —— **quadmath 关卡通过**
++
++### 12.2 事故：v7 内核 global OOM（06:40:59，迭代失败 #1）
++- 现象：tmux 会话整体消失、日志无 exit 标记；事故期间 ssh 长连接亦挂起
++- 根因：80 核全并行（编译与链接均无上限），单 cc1plus RSS 峰值 ~5.5GB，121GB RAM 耗尽 → kernel global OOM，OOM killer 清掉 `user-1000.slice`（含 tmux scope 全部进程）。dmesg：`Out of memory: Killed process 288306 (cc1plus)`
++- 教训：构建日志早有警告 "LLVM parallel link jobs is unlimited. Memory usage may be much higher"
++
++### 12.3 内存保护（v8.1 起；用户约束：**RAM ≤ 100G，尽量加速**）
++| 旋钮 | 值 | 说明 |
++|---|---|---|
++| 顶层 | `ninja -C build -j 12` | 最多 12 个 subproject 并发 |
++| `CMAKE_BUILD_PARALLEL_LEVEL` | 48 | 所有 `cmake --build` 子构建并行上限（runner env） |
++| `FLANG_PARALLEL_COMPILE_JOBS` | 16 | flang 大 TU 限流（实测单 TU RSS 可达 5.5GB） |
++| `LLVM_PARALLEL_LINK_JOBS` | 3 | GNU ld 链接限流（经 cmake -B 写入 CMakeCache） |
++
++- 内存预算：最坏 ≈ 3×12GB 链接 + 45×1.2GB 编译 ≈ 90GB RSS，swap（71GB）作瞬态缓冲；实测 40 并发编译期 used 49GB
++- 实施：runner `/home/ubuntu/work/GitlabLeo/run-v8.sh`（env + ninja -j）；flang/link 池经 `cmake -S . -B build -DFLANG_PARALLEL_COMPILE_JOBS=16 -DLLVM_PARALLEL_LINK_JOBS=3` 落入 CMakeCache
++- 注：下游 ROCm 库（clr/rocr/rocblas 等）链接用自举 ld.lld（低内存高速度），GNU ld 仅 LLVM 本体使用
++- 监控：tmux `therock-v8`；日志 `/home/ubuntu/work/GitlabLeo/p3-build-v8.log`，`=== build v8.1 exit code: N ===` 为终态标记
++
++### 12.4 修复 #8：pre_hook_amd-llvm.cmake 的 F128 注入（v8.1 失败 #2 根因，2026-09-13）
++
++**现象**：v8.1 在 [123/129] host `runtimes` configure（`flang-rt/lib/quadmath/CMakeLists.txt:84`）复现 quadmath 错误，失败命令行含 `-DFLANG_RUNTIME_F128_MATH_LIB=libquadmath` ×2。
++
++**排查**：LLVM CMakeCache 该变量为空（:832）；TheRock `compiler/CMakeLists.txt:128`（修复 #7）传空值；llvm/runtimes 与 flang-rt 源码、GPU cache 文件（GPU.cmake/AMDGPU.cmake）均无 quadmath 字样；build_tools/ 无注入。
++
++**根因**：`compiler/pre_hook_amd-llvm.cmake:60`（amd-staging 分支块，TODO 注释"Guard for amd-staging only"）无条件 `set(FLANG_RUNTIME_F128_MATH_LIB "libquadmath")` —— 以普通变量（非 cache）注入，在 amd-llvm EP configure 作用域内遮蔽空 cache 值，经 llvm/runtimes 的 `append_passthrough_options`（CMakeLists.txt:422）扫描转发进 host runtimes-configure 命令（base + per-target 展开共 ×2），固化进 `build/compiler/amd-llvm/build/build.ninja:227369`。
++
++**教训**：v7 的"configure 通过"（log:593 Build files written）只是 amd-llvm 主 EP configure；host runtimes-configure 在 v7 因 OOM 从未执行——quadmath 闸门从未真正通过。修复 #7 只挡住了 cache 路径，普通变量路径漏网。
++
++**修复**：与修复 #7 相同的架构守卫（x86_64/AMD64/amd64 → "libquadmath"，否则 ""）。备份：`compiler/pre_hook_amd-llvm.cmake.bak-f128-20260913`，diff 已验证。
++
++**清理与重启**：删除 `build/compiler/amd-llvm/stamp/configure.stamp`（强制 EP reconfigure 重生成规则）、`build/runtimes/runtimes-bins`（失败残留）、`build/runtimes/runtimes-stamps`；amdgcn GPU runtimes（[2793] 步）与 flang 对象保留复用。v9 = `run-v9.sh`（内存参数同 v8.1：ninja -j12 / CMBPL=48 / FLANG_PARALLEL=16 / LLVM_LINK=3），08:49:56 启动（tmux therock-v9）。v9 为最后一次允许迭代（3 次失败即停）。
++
++### 12.5 v9 失败（迭代 #3）：libomptarget.so 链接 OMPT 符号未定义 —— 按策略停止（2026-09-13）
++
++**结果**：v9（fix #8 后）08:49:56 启动，08:55:02 退出码 1（历时 5 分钟，amd-llvm 内 255s）。EP reconfigure 47s 成功；**quadmath 闸门首次真正通过**（host runtimes-configure [15/21] 成功，fix #8 验证生效：重生成 build.ninja 中 FLANG 变量为空值）；host runtimes 构建推进至 [2846/2852]（99.8%）。
++
++**失败点**：[2829/2852] 链接 `lib/libomptarget.so.23.0git`，`ld.lld: undefined symbol`（引用者 `OmptTracing.cpp.o` @ libPluginOmpt.a）：
++- `setOmptAsyncCopyProfile(bool)`
++- `setGlobalOmptKernelProfile(void*, int)`
++- `getSystemTimestampInNs()`
++
++**定位**：
++- 符号定义在 `offload/plugins-nextgen/amdgpu/src/rtl.cpp:181`（AMDGPU 插件实现）；
++- `libPluginOmpt.a` = `OMPT/OmptTracing.cpp + OMPT/OmptProfiler.cpp`（offload/plugins-nextgen/common/CMakeLists.txt:72）；
++- 本构建 libomptarget.so 只链入 `libomptarget.rtl.host.a`，**amdgpu 插件未构建/未链入**（build/lib 下无 amdgpu rtl 库；cache 无 LIBOMPTARGET_BUILD_AMDGPU_PLUGIN 条目）——host 侧 OMPT 设备追踪代码引用了只存在于 amdgpu 插件的符号。
++
++**7.1.1 参考树对照**（下次会话修复方向）：
++- `offload/plugins-nextgen/common/OMPT/OmptTracing.cpp`：7.1.1 与 10.0 **有差异**（7.1.1 改过）
++- `offload/plugins-nextgen/amdgpu/src/rtl.cpp`：**有差异**（7.1.1 改过）
++- `offload/plugins-nextgen/common/OMPT/OmptDeviceTracing.h`：无差异
++→ 7.1.1 在 riscv64 构建成功，对这两个文件的修改大概率覆盖本问题。下一步：`diff RISC-V-7.1.1/llvm-project/<file> compiler/amd-llvm/<file>` 逐个比对并移植（符合"参考 7.1.1 适配"既定原则），然后 v10。
++
++**三次迭代汇总**：
++| 迭代 | 失败点 | 根因 | 处置 |
++|---|---|---|---|
++| v7 | 06:40 内核 OOM | 80 核无限制并行编译，全局 OOM 杀 cc1plus | 内存三重限制（§12.2/12.3） |
++| v8.1 | runtimes-configure quadmath | pre_hook_amd-llvm.cmake:60 普通变量注入 libquadmath（修复 #7 只挡了 cache 路径，普通变量经 passthrough 扫描漏网） | fix #8 架构守卫（§12.4） |
++| v9 | libomptarget.so 链接 | OMPT 追踪符号仅定义于 amdgpu 插件，host 链接缺该插件 | 待办：移植 7.1.1 对 OmptTracing.cpp / rtl.cpp 的修改 |
++
++**状态**：按用户策略（迭代 3 次失败即停止）停止。产物大量保留可复用：flang 全量对象、GPU builtins/runtimes（[2793] 步）、host runtimes 2846/2852 对象、基座子项目（[111/539] 全部）。tmux 会话随脚本退出自动结束。
++
++### 12.6 迭代 v10–v14：amd-llvm 全绿；三连环境类故障修复（fix #10/#11/#12）
++
++**v10（09:17–09:23，fix #9 验证 ✓）**
++- libomptarget.so.23.0git 正常链接（log L220–221，无未定义符号），amd-llvm SUCCEEDED —— 迭代 #3（OMPT 符号）正式关闭；
++- ROCR-Runtime ✓ 75s、hipcc ✓ 67s、rocminfo ✓ 3s、hipify ✓ 120s、amd-comgr ✓ 179s；
++- 失败 #4：amdsmi `tests/amd_smi_test/amdsmitst` 链接失败 —— `ld.lld: error: relocation refers to a symbol in a discarded section`（.LFB/.LEHB/.LEHE，GCC 命名风格），全部指向 `build/third-party/googletest/dist/lib/libgtest.a(gtest-all.cc.o)`。
++
++**失败 #4 根因**：libgtest.a 由系统 GCC 编译（third-party 自举阶段产物）。GCC riscv64 的 .gcc_except_table（ULEB128 重定位对）不在函数 COMDAT 组内；amdsmitst 用新 clang+lld 链接时 COMDAT 去重丢弃 GCC 侧 .text 副本，保留的例外表仍引用被丢弃段内的局部标签 → lld 硬错误。BUILD_TESTS=ON 传递链：core/CMakeLists.txt:72 `-DBUILD_TESTS=${THEROCK_BUILD_TESTING}`。
++
++**fix #10（生效）**：超项目缓存翻转 `cmake -S . -B build -DTHEROCK_BUILD_TESTING=OFF`（验证 `THEROCK_BUILD_TESTING:UNINITIALIZED=OFF`）。测试非 M2/M3 必需，一次性消除整类「GCC-gtest + lld riscv64」故障（hip-tests/rocrtst 等迟早复发）。
++
++**v11（09:29–09:48，fix #10 验证 ✓）**：amdsmi SUCCEEDED（60s）、ocl-clr ✓、rocminfo ✓；失败 #5：hip-clr configure FAILED（14s）。
++
++**失败 #5 根因**：clr/hipamd/src/CMakeLists.txt:261 硬性要求 Python3 模块 CppHeaderParser（系统 python 3.14.4 缺失）。
++
++**fix #11（生效）**：`python3 -m pip install --user --break-system-packages CppHeaderParser`（装得 CppHeaderParser-2.7.4 + ply-3.11，import 验证 OK）。
++
++**v12（09:52–09:54，fix #11 验证 ✓）**：hip-clr configure SUCCEEDED（11s），hip-clr 全量构建完成（libamdhip64.so.7.15.26366 ✓ 61s）；失败 #6：rocRAND configure FAILED（0 秒即败）。
++
++**失败 #6 根因**：CMake 4.2.3 在 project() 的 CMAKE_PROJECT_TOP_LEVEL_INCLUDES 阶段（平台信息加载前）拒绝 `add_library(... SHARED IMPORTED)`：`ADD_LIBRARY called with SHARED option but the target platform does not support dynamic linking`。调用链：rocrand/CMakeLists.txt:88 (project) → _init.cmake:140 → cmake/therock_primlibs_benchmark_deps.cmake:15 find_package(amd_smi) → therock_subproject_dep_provider.cmake:63 → amd_smi-config.cmake:43 → amd_smiTargets.cmake:59 `add_library(amd_smi SHARED IMPORTED)`。该注入是 TheRock 为上游 rocPRIM benchmarks 未调 find_package 的 workaround（issue #4651）；hsa-runtime64 同款写法只因从未被 pre-project 消费而幸免。CMake 4.2.3（系统）在此阶段还会预置 CMAKE_SYSTEM_PROCESSOR —— 这是 v13 守卫失效的原因。
++
++**fix #12 v1（失败）**：`if(CMAKE_SYSTEM_PROCESSOR)` 相位守卫 → v13 同错误复发（调用栈显示 deps 文件:16 的 find_package 在守卫 TRUE 分支执行）。
++
++**fix #12 v2（生效）**：改用 CMAKE_PROJECT_INCLUDE 钩子把真实 find_package 延迟到 project() 的最后一步（语言/平台已加载，仍早于任何 add_subdirectory，语义保留）：
++- cmake/therock_primlibs_benchmark_deps.cmake：`if(NOT TARGET amd_smi) set(CMAKE_PROJECT_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/therock_amdsmi_deferred.cmake") endif()`
++- 新增 cmake/therock_amdsmi_deferred.cmake：`if(NOT TARGET amd_smi) find_package(amd_smi REQUIRED CONFIG) endif()`
++- 备份：cmake/therock_primlibs_benchmark_deps.cmake.bak-amdsmi-20260913
++
++**v14（10:12 启动，fix #12 v2 验证 ✓）**：rocRAND configure SUCCEEDED（9s）、origami ✓ 10s、hipCUB ✓；构建进行中（math-libs 阶段）。
++
++**本轮经验**：三连失败均为「环境/工具链版本」类（缺 python 包、CMake 4.x 行为变化、混合工具链），非 ROCm 源码缺陷；TheRock 上游对 riscv64 + CMake 4.2 组合未覆盖。
++
++### 12.7 迭代 v14–v16：kpack/artifact 链路修复 + profiler 组精细化门控（fix #13–#17，2026-09-13 上午）
++
++**v14（10:12 起，fix #12 v2 验证 ✓）**
++- 绿：hipRAND ✓、rocThrust configure ✓、rocFFT configure ✓、msgpack 缺失前 rand 边全过；
++- 失败 #7：kpack artifact 分裂边（rand_dbg/dev/test/lib → artifact_manifest.txt）FAILED —— `ModuleNotFoundError: No module named 'msgpack'`（rocm_kpack/binutils.py:9，kpack python 工具链缺依赖）。
++
++**fix #13（生效，v15 验证 ✓）**：`python3 -m pip install --user --break-system-packages msgpack`（装得 msgpack-1.2.2）；import ✓；split_artifacts.py --help 干跑 ✓。v15 中 rand_dbg/dev/test + prim_doc/prim_dev 分裂全部 SUCCEEDED。
++
++**v14 冻结事故（10:13–10:55）**：rocprofiler-sdk configure 边 36+ 分钟无进展，子 cmake 进程 STAT=T（SIGTTIN），tmux 面板空白。
++**根因**：git 全局配置 9 条 `url.https://gh-proxy.com/https://github.com/.insteadOf` 重写；gh-proxy 对 fmt 子模块 clone 返回鉴权挑战页 → git 在无 tty 环境等待用户名输入 → SIGTTIN 整树停摆（rocprofiler-sdk_configure.log 停在 10:13 "Cloning into .../external/fmt"）。rocprofiler-sdk 对 M2/M3 非必需。
++**fix #14（生效，后被 fix #17 细化取代）**：profiler/CMakeLists.txt L24 改为 `if(THEROCK_ENABLE_ROCPROFV3 AND NOT THEROCK_SKIP_PROFILER_GROUP)` + 重配置 `-DTHEROCK_SKIP_PROFILER_GROUP=ON -DTHEROCK_FLAG_INCLUDE_PROFILER=OFF`（超项目 cache 本有 THEROCK_ENABLE_PROFILER=OFF/ROCPROFV3=OFF，但组仍进图——未深究覆盖源，直接门控绕过）；验证 build.ninja 无 trace-decoder/roctracer 边（残留 sdk/aqlprofile 引用仅为 expunge 工具边）；冻结树按 CONT→TERM→KILL 顺序清理 T 态进程。备份 profiler/CMakeLists.txt.bak-profiler-20260913。
++- **副作用埋雷（v16 引爆）**：整组剔除把 hipBLASLt 硬依赖的 roctracer/aqlprofile 一并移出图。
++
++**v15（10:58–11:01，exit 1，fix #13 验证 ✓）**：composable_kernel configure ✓（162s）、rocFFT configure ✓、hipRAND ✓、rocThrust ✓；两连失败：
++- **#9a** kpack ELF 解析：`Error: Unsupported ELF machine type: 243 (0xf3). Supported types: [62, 21]` —— parser 只认 x86_64/ppc64，无 riscv64 条目；
++- **#9b** rocRoller 链接（48s 败）：`ld.lld: error: relocation refers to a symbol in a discarded section`（libyaml-cpp.a singledocparser.cpp.o 的 .LEHB/.LFB/.gcc_except_table 节）—— 与失败 #4 同类：GCC 构建的库 + clang/lld 链接，COMDAT/gcc_except_table 跨编译器不兼容。yaml-cpp 声明缺 COMPILER_TOOLCHAIN（默认系统 gcc）。
++
++**fix #15（生效，v16 验证 ✓）**：rocm_kpack/elf/types.py 增加 riscv64 支持：`EM_RISCV = 243`、`R_RISCV_RELATIVE = 3`、`_ARCH_CONFIGS` 增 `EM_RISCV: ArchConfig(page_size=0x1000, r_relative=R_RISCV_RELATIVE)`；验证 `get_arch_config(243)` → `ArchConfig(page_size=4096, r_relative=3)` ✓。备份 types.py.bak-riscv-20260913。v16 中 rand_lib 分裂 SUCCEEDED。
++
++**fix #16（生效，v16 验证 ✓）**：third-party/yaml-cpp/CMakeLists.txt 声明块插入 `COMPILER_TOOLCHAIN / amd-llvm`（语法对照 spdlog 声明）；清空 build/third-party/yaml-cpp/{build,stamp,stage,dist} 后重配置。v16 中 yaml-cpp 以 clang 重建、rocRoller 全量重链 SUCCEEDED（2587s，GPUArchitectureGenerator 通过）——GCC/clang 混链问题类（#4、#9b）双案例根治，经验：**凡被 clang/lld 链接的 third-party 必须显式声明 COMPILER_TOOLCHAIN amd-llvm**。备份 CMakeLists.txt.bak-toolchain-20260913。
++
++**v16（11:09 启动，tmux therock-v16 → p3-build-v16.log）**：rocRoller ✓（fix #16 验证）、CK 大规模编译（[400+/1421]，~4 目标/分钟）；失败 #10：hipBLASLt configure 7s FAILED —— `Could not find super-project find_library(NAMES roctx64)`（therock_explicit_finders.cmake:70 ← hipBLASLt CMakeLists.txt:136；同组依赖还有 hsa-amd-aqlprofile64、roctracer/roctx.h）。
++**失败 #10 根因**：fix #14 副作用 —— roctracer/aqlprofile 随整组出图，hipBLASLt 显式 finder 失去解析源。
++**fix #17（脚本已备，待 v16 终态应用）**：恢复 profiler/CMakeLists.txt 备份撤销整组门控 → 仅对 rocprof-trace-decoder 块、rocprofiler-sdk 块、sdk artifact 块包 `if(NOT THEROCK_SKIP_ROCPROFILER_SDK)`，保留 aqlprofile/roctracer（v13 已建、dist 在盘，零重建）→ math-libs/CMakeLists.txt 与 math-libs/BLAS/CMakeLists.txt 的 `optional_profiler_deps` 去掉 rocprofiler-sdk 只留 roctracer → 重配置 `-DTHEROCK_FLAG_INCLUDE_PROFILER=ON -UTHEROCK_SKIP_PROFILER_GROUP -DTHEROCK_SKIP_ROCPROFILER_SDK=ON`。备份 .bak-refine-20260913 / .bak-proftools-20260913（math-libs×2）。
++
++**状态**：v16 在途（CK 编译 [408/1421]，RAM ~49G 安全）；fix #17 脚本已备好（fix17.sh，含 ninja 运行守卫、build.ninja 图验证与 v17 启动），待 v16 终态后应用并启动 v17；CK 构建状态经 stamp 保留（v17 不重编）。
++
++**运维经验（本轮新增）**：
++- PowerShell→ssh 链路双引号会被剥离（`grep -c ""` 读 stdin 打 0、`stat -c "%y %n"` 被拆）——ssh 命令内禁用双引号，grep -e 用单词模式；补丁一律本地写脚本 → scp → bash 执行（python3 heredoc 引号安全）；
++- 420s 轮询偶发 ssh 挂起超时——直接重试短查询即可，tmux 内构建不受影响；
++- 监控子代理（Sisyphus-Junior）模型通道不可用，改为主会话自轮询值守；
++- 「T 态进程 = SIGTTIN 等终端输入」是无 tty 环境常见冻结模式，清理顺序 CONT→TERM→KILL。
++
++### 12.8 v16 中期全景、进度盘点与资源策略升级（2026-09-13 13:17 实测；用户批准 RAM 100G→110G + 可并尽并）
++
++**91 边图推进（v16）**：前沿 [10/91]——[1]–[9] 完成（rand/prim 分裂、yaml-cpp clang 重建、rocRoller 全量 266 目标 43min 链接成功 = fix #16 验证）；[10] hipBLASLt configure 失败 = 失败 #10（fix #17 待 v16 终态应用）。composable_kernel 在途长边 [485/1421]，实测速率 3.6 目标/分钟（[339]@5200s → [485]@7641s），预计 **17:30–18:30 完成**；随后 v16 以 exit 1 终止（ninja 默认 -k1 首败即停调度，CK 为在途边跑完才退出）。
++
++**stamp 盘点（configure+build+stage 三件套 = 建成）**：
++- base 6/6（rocm-cmake、rocm-core、half、rocm_smi_lib、aux-overlay、rocprofiler-register）；compiler 4/4（amd-llvm、amd-comgr、hipcc、hipify）；
++- core 7/9 建成（ROCR-Runtime、clr、ocl-clr、ocl-icd、rocminfo、rocm-kpack、amdsmi）；hip-tests、rocrtst 未开始；
++- third-party ~37/37 全建成（含 yaml-cpp、SuiteSparse、host-blas、grpc、fftw3×2）；
++- prim：rocPRIM、rocRAND、hipCUB、rocThrust、hipRAND、hipBLAS-common、origami、mxDataGenerator、rocRoller 建成；composable_kernel 在途；rocFFT 仅 configure；
++- profiler 3/3 建成（aqlprofile、roctracer、rocprof-trace-decoder，v13 遗产直接复用）；
++- **BLAS 尾段 15 子项目 0 建成**（hipBLASLt、rocBLAS、hipBLAS、hipSOLVER、hipSPARSE、hipSPARSELt、rocSPARSE、rocSOLVER、hipFFT、rocFFT-build、hipTensor、rocWMMA、rocALUTION、rocPRIM_tests、rocrtst 待）。
++
++**时间估算模型**：CK 4.3h ＋ fix #17/v17 启动 ≈5min ＋ BLAS 尾段 8–16h（Tensile 代码生成为重头：hipBLASLt 1–2h、rocBLAS 2–4h、其余合计 4–8h；关键路径 hipBLASLt→hipBLAS 与 rocBLAS→rocSOLVER→hipSOLVER ≈ 5–8h，支线并行填充）＋ 新失败预留 1–4h → **M2 预计 9/14 凌晨 2 点–上午 9 点**，中性 13–18h（自 13:17 起）。高危风险：① Tensile python 依赖与 gfx1201 内核生成；② hip-tests（cache 中 THEROCK_ENABLE_CORE_HIPTESTS=ON，若耗时/报错 → 重配置改 OFF）；③ SuiteSparse/rocSOLVER 重模板编译 RAM；④ rocWMMA 重模板单 TU 2–3G。
++
++**资源与并行策略（用户指令落地）**：
++- 子项目编译并行 CMAKE_BUILD_PARALLEL_LEVEL 48→**64**（run-v17.sh）；
++- 超项目边并行 ninja -j 12→**24**；
++- **rocFFT 并行预构建**：rocFFT 已 configure（v14/v15 遗产、build 边被 v16 冻结）；超项目 ninja 有全局锁（.ninja_lock，主构建运行期间同图 ninja 调用会阻塞——ninja -n 亦触发 Re-running CMake 后停止列举），但**内层子构建目录独立加锁** → `ninja -C build/math-libs/rocFFT/build -j 32` 于 tmux therock-rocfft 与 CK 并行（日志 p3-rocfft-prebuild.log）；v17 的 rocFFT build 边届时秒过（内层全 up-to-date），尾段省 ~1–1.5h；
++- RAM 预算：CK ~50G ＋ rocFFT -j32 ~30G ≈ 80G 峰值（110G 内）；v17 期 worst-case 6 条大分支 × 64 jobs 理论超限，实际受依赖链与 ninja 就绪率约束（v10–v16 实测 3×48 jobs 峰值仅 73G）；
++- **节流预案**：轮询若见 used > ~100G，SIGSTOP 最大内存子项目 ninja（T 态需先 CONT 再 TERM 的经验同样适用），兄弟构建完成后再 CONT。
++
++**运维补充**：ninja -n 在主构建运行时返回空集的原因 = 触发 [1/2] Re-running CMake（manifest dirty）后 dry-run 停止列举，并非无剩余任务。
++
++### 12.9 勘误：rocFFT 实况与并行预构建事故（2026-09-13 13:42）
++
++- **勘误 1**：§12.8 中「rocFFT build 边被 v16 冻结」不实——ps 证实 v16 于 11:09 启动即调度了 rocFFT build 边（teatime --label rocFFT → cmake --build 树一直在跑），仅控制台 [N/91] 行未及打印（[10/91] hipBLASLt 首败截断了后续输出）。rocFFT 正在 v16 内构建，**无需预构建**，BLAS 尾段待建子项目由 15 减为 14。
++- **勘误 2**：「ninja 有 build 目录全局锁」不实——ninja 无构建目录锁；ninja -n 返回空集的真因是 manifest dirty 触发 Re-running CMake 后 dry-run 停止列举。同目录并发 ninja = 竞态。
++- **事故**：13:26–13:42 预构建 ninja（-j32）与 v16 的 rocFFT 构建在同一 build 目录并发 16 分钟。危害评估：本方仅完成 1 个 stamp-rm 无害边（rm 的 stage.stamp 本就不存在）+ 1 个未完成 TU（被杀，未写产物）；双方 clang 编译同一源码产物一致，无双写危害；.ninja_log 可能存在交错坏行，ninja 解析忽略坏行，最坏 v17 重做部分 rocFFT TU。
++- **处置**：tmux kill-session therock-rocfft 整树终止（ninja -j 32 及其子 clang 全部消失，v16 侧进程无恙，ps 复核 ✓）。
++- **新发现**：rocFFT 存在病态大 TU——单 clang++（PID 446757）自 11:09 起持续编译 2.5h+，CPU 时间 45s 增 46s（100% 单核，非死锁）。riscv64 单核性能放大巨型模板 TU 编译时长，hipTensor/rocWMMA/rocSOLVER 同类风险预警。
++- **教训**：并行预构建前必须 ps 核对该子项目边是否已在跑（[N/91] 控制台轨迹不可靠，以 ps + build/logs 为准）；CK 实况同步修正：其 ninja -j48 实际并发 ~40 个 clang-cc1（此前按 top-RSS 抽样误读为 3–6 个）。
++
++### 12.10 v16 终态、fix #17 应用、v17 的 CK 重建发现；用户暂停（2026-09-13 19:23）
++
++**v16 终态（16:30:40 exit 1）**：CK SUCCEEDED（19254s，1421/1421 全部）、rocFFT SUCCEEDED（13675s，含 gfx1201 内核 cache）后按 -k1 规则退出（hipBLASLt configure 失败为唯一失败）。轮询链路 15:07–19:05 中断（ssh 挂起 + 重试延迟），机器空转 2.5h——教训：轮询超时后的重试若再挂，应加自愈循环。
++
++**fix #17 应用（19:06，验证 ✓）**：profiler/CMakeLists.txt 恢复 + 内层门控（rocprofiler-sdk 与 rocprof-trace-decoder 各包 `if(NOT THEROCK_SKIP_ROCPROFILER_SDK)`，aqlprofile/roctracer 保留）；math-libs 与 math-libs/BLAS 的 optional_profiler_deps 去掉 rocprofiler-sdk；重配置 `-DTHEROCK_FLAG_INCLUDE_PROFILER=ON -UTHEROCK_SKIP_PROFILER_GROUP -DTHEROCK_SKIP_ROCPROFILER_SDK=ON`；图验证 roctracer 69 边恢复、trace-decoder 0、sdk 仅 5 条 expunge 引用。v17 19:06:01 启动（CMBPL=64、super -j24、RAM 预算 110G）。早期 rocRoller configure 5s ✓、CK configure 148s ✓（重配置触发）。
++
++**发现（fix #18 候选，决策待续）**：FLAG 翻回 ON → optional_profiler_deps（roctracer）注入 CK 等已建子项目 → 编译命令行全变 → **CK 内层 build 全量重跑**（[39/1421] 且 M=1421 整图进计划 ≈ 5.4h 白付；v16 同图 4.4 目标/分钟佐证全量）。已取证：math-libs/BLAS L15 定义 optional_profiler_deps、L83/193/271/314/403 五处消费；math-libs L575 定义、L629 消费；hipBLASLt declare 的 runtime_deps 仅见 amdsmi/rocm_smi_lib、rocRoller deps 见 mxDataGenerator/fmt/yaml-cpp/spdlog/libdivide——**roctx64 来源尚未定位**（declare 的 BUILD_DEPS 全文未读，L193 疑为 hipBLASLt 消费点）。
++**决策标准**（恢复时执行）：
++- 读 math-libs/BLAS L83/193/271/314/403 各归属哪个 declare + math-libs L629 归属；
++- 方案 A：保持 FLAG=ON，吃下 CK 5.4h 重建（零风险，下游依赖干净）；
++- 方案 B：FLAG=OFF 回到 v16 命令行状态（CK 等全部 up-to-date 秒过），仅对**未建**的 BLAS declare（hipBLASLt/rocBLAS/hipBLAS/hipSOLVER/rocSOLVER/rocSPARSE/hipSPARSE/hipSPARSELt）将 `${optional_profiler_deps}` 替换为无条件 `roctracer`——前提：已建子项目（CK、hipBLAS-common、origami、rocRoller）的 declare 不在替换范围（若 L83=hipBLAS-common 则其重建仅数分钟，可接受）；省 ~5.4h，代价是少量 whack-a-mole 风险。
++
++**暂停（用户指令 19:23）**：tmux therock-v17 整树终止，孤儿清理复核 ninja=0/clang=0/无会话，RAM 2.9GB 全闲。构建状态经 stamp 与 .o 全保留，**恢复 = 做 fix #18 决策 → 重配置 → 启动 v18**，CK 已重编的 39 个目标若命令行回退会再重编（~13min 损失，可接受）。
++
++**运维教训**：`pkill -f clang-23` 会匹配到自身 shell 的命令行文本导致自杀（本次无害，session 已先杀）；远程自杀式 pkill 应排除自身（如 pkill -f 后接不会出现在命令串里的定界写法，或改用显式 PID）。
++
++**fix #18 定案（2026-09-13 19:26，暂停期间只读取证完成；执行待用户恢复指令）**：选方案 B（省 ~5.4h）。
++- 消费点归属实测：BLAS L83=rocRoller（已建）、L193=hipBLASLt、L271=rocBLAS、L314=rocSPARSE、L403=hipSPARSELt（后四者未建）；math-libs L629=composable_kernel（已建）。hipSOLVER/rocSOLVER/hipBLAS 不消费。
++- 关键推理：v16 中 hipBLASLt 失败时 FLAG 已是 OFF 仍硬性要求 roctx64——因其自身 CMakeLists.txt:136 硬编码 find_library(roctx64)（therock_explicit_finders.cmake 拦截），依赖搜索链来自 declare 的 deps；故仅 roctracer 回图不够，必须在 hipBLASLt 的 RUNTIME_DEPS 显式含 roctracer。
++- 执行内容（/tmp/fix18.sh 已上传、bash -n 语法通过，未执行）：四处锚点替换 `${optional_profiler_deps}` → `roctracer`（仅四个未建 declare；已建的 rocRoller L83 与 CK L629 保持条件化）→ 重配置 `-DTHEROCK_FLAG_INCLUDE_PROFILER=OFF` → CK/rocRoller 命令行回退 v16 状态（CK 仅 ~39 个 v17 期重编目标需重做 ~13min）→ 启动 v18（tmux therock-v18，CMBPL=64、-j24、110G 预算、日志 p3-build-v18.log）。
++- 预期：hipBLASLt configure 通过（roctx64 经显式 dep 解析）→ BLAS 尾段推进 → M2 预计 9/14 凌晨 2–4 点。
++- 暂停状态复核（19:26）：ninja=0、clang=0、teatime=0（此前 pgrep 计 1 为自匹配假象——ssh 命令串含关键词被 pgrep -f 计入，与 pkill 自杀同一陷阱的良性变体）、无 tmux 会话、RAM 2.3GB、load 回落中。
++
++### 12.11 v18/v19：fix #18 验证成功（CK 110 目标重做）、失败 #10 关闭、失败 #11 与 fix #19（2026-09-13 晚）
++
++**v18（19:33:28–20:07:47，fix18 v4 后启动）**
++- fix18 v4 执行成功：行号直击式注入 4 处（hipBLASLt L193、rocBLAS L271、rocSPARSE L314、hipSPARSELt L403，保留各自缩进），仅剩 rocRoller L83 消费 `${optional_profiler_deps}`；重配置 `THEROCK_FLAG_INCLUDE_PROFILER=OFF`（缓存验证：FLAG=OFF、SKIP_ROCPROFILER_SDK=ON、BUILD_TESTING=OFF）。
++- **CK 免全量重建证实**：CK build 计划仅 `[N/110]`（v17 若走完则是 1421），重做 1885.7s（~31 分钟）完成（END exit 0）——fix #18 省 ~5 小时。rocRoller reconfigure 5s + build 正常。
++- **失败 #10 关闭**：`[hipBLASLt configure SUCCEEDED in 39.5s]`——roctx64 经显式 roctracer 依赖解析成功（fix #17 回图 + fix #18 显式注入的组合效果）。
++
++**失败 #11：hipBLASLt build 失败（345s，v18 内）**
++- 9+ 个编译目标全在 `clients/`（bench/test 代码），库本身目标正常。
++- 根因：`clients/common/include/hipblaslt_math.hpp:33` 无条件 `#include <immintrin.h>`（x86 专用头）→ riscv64 clang 直接 `#error "This header is only meant to be used on x86 and x64 architecture"`。
++- 上游 `HIPBLASLT_ENABLE_CLIENT` 默认 ON 且独立于 BUILD_TESTING；TheRock declare 只按 testing 开关门控了 TENSILELITE client，没关 hipBLASLt 自己的 client。
++- 佐证：RISC-V-7.1.1 仓库中同文件被 patch 过（还有 hipsparselt_math.hpp、hipblas type_utils.h 等）——7.1.1 走的是"保留 clients + per-arch 守卫"路线。
++
++**fix #19：`-DHIPBLASLT_ENABLE_CLIENT=OFF`（20:10 应用）**
++- 理由：最小组件集目标下 clients（bench 工具）非 M2/M3 必需；零源码补丁、单行 declare 修改；`hipblaslt::mxdatagen` 在两个 client 都 OFF 时自动跳过；未来要 benchmark 再移植 7.1.1 的 per-arch 守卫。
++- 执行：declare CMAKE_ARGS 在 `-DHIPBLASLT_ENABLE_BLIS=OFF`（L168）后插入 L169；重配置 14.7s；v19 启动（tmux therock-v19，日志 p3-build-v19.log）。
++
++**运维教训（脚本工程）**：fix18 连败 3 次的根因链——(1) 多行文本锚点对嵌套 if 块的缩进漂移脆弱（rocSPARSE/hipSPARSELt 块在 `if(NOT WIN32)` 内多一层缩进）；(2) 凭记忆写宏名错误（实为 `therock_cmake_subproject_declare`，非 `declare_project`）；(3) 循环内原地变更字符串后继续使用预先计算的偏移数组（`s.find` 在变更后字符串上重算 vs 缓存坐标不一致 → 块边界塌缩）。最终可靠模式：**行号直击 + 内容断言 + 最终文本上重算块边界验证 + 全有或全无写入**（三次失败均因断言在写入前触发，文件零损伤）。
++
++### 12.12 v19：失败 #12（TensileLite 缺 joblib）与 fix #20；加速参数决策（2026-09-13 晚）
++
++**v19（20:10:11 启动，fix #19 后）**
++- `[hipBLASLt configure SUCCEEDED in 10 seconds]`，构建日志 clients 相关目标 **0 次**——fix #19 生效确认（clients 已彻底移出计划）。
++- `[hipTensor configure SUCCEEDED in 68 seconds]`——hipTensor 首次进入构建图。
++- **失败 #12**：hipBLASLt build 失败（248s），`tensilelite-device-libraries-TensileLogic.stamp` 与 extops（gfx1200/gfx1201 内核 .s 生成）失败。根因：TensileLite 走**系统 python3**（无 venv），`Tensile/Common/Parallel.py:31` 硬性 `from joblib import Parallel, delayed` → `ModuleNotFoundError`。`TensileLogic --check-all` 为 device-library 校验步。
++- 附带确认：`tensilelite/rocisa` 的 `_rocisa.abi3.so` 在 [140/170] 已链接成功（nanobind/scikit-build 链可用）；系统 python3 已有 numpy 2.3.5、PyYAML 6.0.3、msgpack 1.2.2。
++- v19 失败后超图 ninja 停止调度新边，但在飞边（hipTensor 等内层构建，~128 clang）继续排水；其完成产物（.o/stamp）保留，v20 重跑该边时内层 ninja 快速跳过已完成目标。
++
++**fix #20：补装 TensileLite/Tensile Python 依赖（系统 python3，`--break-system-packages`）**
++- 必需：**joblib 1.6.0 装好并验证**（崩溃点；rocBLAS 的完整版 Tensile 同样需要，一并受益）。
++- 可选家族：simplejson 4.1.2 ✓、yappi 1.7.6 ✓、invoke 3.0.3 ✓、filelock 3.32.6 ✓、packaging 已有 ✓。
++- **orjson 安装失败**（riscv64 无预编译 wheel，Rust 源码构建失败）——Tensile 对 JSON 加速器为 try/except 回退链（orjson→ujson→simplejson→json），simplejson 已兜底，可接受；ujson 网络抖动后转源码下载（限时重试中，可选）。
++
++**加速参数决策（用户指令：能并则并行、RAM<=110G）**
++- 实测并行基线：v18/v19 期最高 192 clang 并行、RAM 峰值 ~57G（预算 110G 未触顶）。
++- v20 起提升两处：**CMBPL 64→96**（子项目内层并行度）、**超图 ninja -j 24→32**（子项目边重叠度）。两者均为运行期环境变量/调度参数，**不写入编译命令行，不触发任何目标重编**（与 fix #18 教训同理核对过）。
++- RAM 守卫 armed：轮询中 MemAvailable < 20G → 对最大 RSS 内层 ninja SIGSTOP 节流，恢复 >40G 后 SIGCONT。
++- v20 runner 已备好（tmux therock-v20、日志 p3-build-v20.log），**待 v19 排水完成（ninja=0）后立即启动**——超图 ninja 无目录锁，双实例竞态是已知禁忌。
++
++
++## §12.13 M2 达成 —— v20 夜间战报、失败 #13 双层修复、v22 终局（2026-09-14 凌晨至清晨）
++
++### v20 夜间战报（21:52:39 → 02:13:29，exit 1 @ [48/60]）
++
++排水期 49 分钟于 21:52:36 结束（drain-watcher 零间隙接力），v20 以 CMBPL=96 + super -j32 启动。夜间完成 18 条边 SUCCEEDED：
++
++| 边 | 耗时 | 备注 |
++|---|---|---|
++| hipBLASLt | 8745s（2.4h） | TensileLite yaml 加载 399s + 80 线程生成 127,846 任务 + amdgcn 汇编（joblib 生效） |
++| rocBLAS | 1888s（31.5min） | Tensile 代码生成+内核编译；预估 3–6h 被加速参数大幅压缩 |
++| rocSOLVER | 4893s（1.36h） | 依赖 rocBLAS/hipBLAS 全部建成 |
++| rocSPARSE | 925s | |
++| hipSPARSELt | 367s | |
++| rocALUTION | 400s | |
++| rocWMMA | 301s | |
++| hipSPARSE | 7s | |
++| hipBLAS | 29s | |
++| hipTensor | （排水期建成） | |
++| 其余 configure/stage 边 | <60s each | hipSOLVER configure 9s 等 |
++
++失败唯一：[48/60] hipSOLVER build（见下）。exit 1 @ 02:13:29。
++
++### 网络断联（23:11 → 06:15，共 7 小时）
++
++夜间 ssh 连接多次挂起，约 23:11 一次 connection reset 后彻底失联；构建侧 tmux 存活继续跑到 02:13 失败，之后 4 小时处于"等待无法投递的修复"的闲置。06:15 重连确认：机器未重启（uptime 连续），GPU 确认离总线（lspci 仅 ASPEED BMC VGA——M2 构建不受影响，Tensile/codegen 是静态 logic 文件驱动）。
++
++### 失败 #13：hipSOLVER → static-lapack（OpenBLAS 0.3.33）双层障碍
++
++hipSOLVER 通过 ExternalProject（rocm-libraries/projects/hipsolver/deps/external-lapack.cmake）git 克隆 OpenBLAS 0.3.33 develop 至 lapack-src，CMake 构建（experimental），参数 -DC_LAPACK=ON -DNOFORTRAN=ON -DTARGET=GENERIC。
++
++**第一层（configure）**：`file STRINGS file ".../lapack-src/kernel/riscv64/KERNEL.generic" cannot be read` —— riscv64 CMake 路径查 KERNEL.generic，实际文件名 KERNEL.RISCV64_GENERIC。
++
++- **fix #21**：就地拷贝 `cp KERNEL.RISCV64_GENERIC KERNEL.generic`（未跟踪文件可存活于 git checkout 更新步骤；克隆持久驻留 build 目录）→ configure 通过。
++
++**第二层（编译）**：`interface/gemm.c:708: error: use of undeclared identifier 'sgemm_p'` —— param.h riscv64 段 `#define SGEMM_DEFAULT_P sgemm_p`（运行期变量，按向量长度/内存动态设定），但声明不可见。x86_64 GENERIC 用常量故不踩坑。
++
++- 根因：common_macro.h L2713–2715 的 extern 声明块守卫 `#if !defined(DYNAMIC_ARCH) && (ARCH_X86|X86_64|IA64|MIPS64|ARM64|LOONGARCH64|E2K|ALPHA)` **漏列 ARCH_RISCV64**（上游 0.3.33 bug）。定义侧 driver/others/parameter.c 无条件存在（`#if SGEMM_P == sgemm_p` 宏恒等测试两头都定义 BLASLONG sgemm_p）——只差声明可见性。
++- **fix #22**：`sed "s/defined(ARCH_ALPHA))/defined(ARCH_ALPHA) || defined(ARCH_RISCV64))/" common_macro.h`（内容定位 + 唯一性断言 count==1 + 幂等守卫 + cp -n 备份 .bak-fix22）→ BEFORE/AFTER 双验证通过。
++
++诊断陷阱记录：对 hipsolver 源树的前两轮 grep 全部静默空结果——错误路径 `/home/ubuntu/work/GitlabLeo/rocm-libraries/...`（实际是 `TheRock/rocm-libraries/projects/hipsolver/`，全小写）。grep 对不存在路径加 2>/dev/null 即无声吞错；此后凡空结果必先 `ls` 验证路径存在。
++
++### v22 终局（06:27:48 → 06:29:16，88 秒）
++
++fix #22 后重启（run-v22.sh = run-v21.sh sed 改名；tmux therock-v22；tee p3-build-v22.log）：
++
++- `[hipSOLVER SUCCEEDED in 35 seconds]`（内部 ninja [16/16] libhipsolver.so.1.3 链接成功；OpenBLAS 大部分 kernel 对象有缓存，仅 interface 重编译）
++- [N/11] artifact 切分：blas_lib / blas_dev / blas_run / blas_test / blas_doc / blas_dbg → generic + gfx1200/gfx1201 切分 → Flatten 至 dist/rocm
++- **`=== build v22 exit code: 0 at Mon Sep 14 06:29:16 AM CST 2026 ===` —— M2 达成**
++
++### M2 证据清单
++
++- build/dist/rocm 共 8.4G；lib/ 含 libhipblas.so.3.6、libhipblaslt.so.1.4、libhipsolver.so.1.3、libhipsolver_fortran.so、libhipsparse.so.4.7.0、libhipsparselt.so.0.2、librocblas.so、librocalution.so.1.0 等 BLAS/Sparse 全家桶
++- build/artifacts/ 共 139 个包（blas_lib_gfx1200 / blas_lib_gfx1201 / blas_dev_generic / host-blas_* 等）
++- v22 日志 p3-build-v22.log；hipSOLVER_build.log END code=0 34.5s
++
++### 按用户指示的 M2 后动作
++
++- GPU 离总线 → **不做 M3 冒烟**（rocminfo gfx1201 + HIP vectorAdd 推迟至 GPU 回归总线）
++- 报告 + 建议 tag：`riscv-baseline-m2-20260914`
++- 文档即本节；五振规则未满（hipSOLVER 3 击即中：fix21 半成 → fix22 成功）
++
++### 战役统计（至 M2）
++
++- 运行 v1–v22；失败 #1–#13；修复 #1–#22；CMPL/CMBPL 由 64→96，super -j 24→32
++- 最大时间黑洞：网络断联（7h，其中 4h 构建侧闲置）；其次 rocBLAS/hipBLASLt Tensile 生成
++- 运维模式沉淀：行号直击+内容断言+幂等+全有或全无（fix18d 范式）贯穿 #19–#22 零失误；排水-watcher 零间隙接力；路径大小写陷阱两度踩坑（hipsolver/hipSOLVER、rocm-libraries 位置）
++
++## 13. torch v2.13.0 + vLLM 构建战役（TheRock 10.0 dist）
++
++### 13.1 torch v2.13.0 构建战报（2026-09-14，中期记录）
++
++**目标**：TheRock 10.0 dist + PyTorch v2.13.0 + vLLM main 跑通 Qwen3.5-9B 推理。
++基线锁定：vLLM main pyproject 钉死 `torch==2.13.0`（非 2.15.0a0），torch 检出 v2.13.0 tag（cf30153c4c1）。
++
++**参考资产**：RISC-V-7.1.1 栈（torch 2.11 + triton 3.7 + vllm 0.23.1，rocm-merged 7.1.1）；
++补丁资产落盘 `/home/ubuntu/work/GitlabLeo/patches-torch-vllm/`（torch 5 文件 26+/5− 适配补丁已精确移植到 2.13.0，7 处 python3 count==1 断言全过）。
++
++**修复链（按序）**：
++1. attempt-1：`-DROCM_VERSION_HEADER_PATH=.../rocm-version.h`（连字符）干扰 torch LoadHIP 的 find_file（实际文件名 `rocm_version.h` 下划线，TheRock dist 在 `include/rocm-core/`）→ 去掉该 -D、`cmake -U` 清缓存。期间 `ln -sf` 误毁真实 1413B 文件，从 `build/artifacts/base_dev_generic/base/rocm-core/stage/` 还原。
++2. attempt-2：c10/hip 缺 `impl/hip_cmake_macros.h.in` + `test/` 目录 → **根因：绕过 setup.py 手动 cmake 漏掉 HIPIFY 代码生成**（tag 树里 c10/hip 只有 CMakeLists.txt，源文件由 `tools/amd_build/build_amd.py` 从 c10/cuda hipify 生成；7.1 栈走 setup.py 才没踩坑）→ 手动跑 build_amd.py ✓。
++3. attempt-3：Generate 步 kineto 要 `ROCPROF_LIBRARY`（TheRock 按 fix #17 跳过了 rocprofiler SDK）→ `-DUSE_KINETO=OFF`（vLLM 推理无需 profiler）✓ configure 通过。
++4. ninja 编译推进至 **~77%**（torch_cpu 全量 + aotriton_v2 gfx1201 flash/autotune 核并行编译中）。
++
++**环境事件**：14:02 服务器重启（uptime 佐证）——GPU 幸存（Navi 48 R9700 在总线 000f:03:00.0）；**/tmp 被清空**（构建脚本蒸发导致两次静默启动失败）→ 教训：启动脚本一律放 `/home/ubuntu/work/GitlabLeo/scripts/`。
++
++**暂停状态**（15:34，用户指令）：所有构建进程清零（ninja/clang++/tmux），RAM 7G，机器让位性能测试。
++**恢复方式**：`tmux new-session -d -s torch-build "bash /home/ubuntu/work/GitlabLeo/scripts/p2_torch3.sh"`（增量续编译）→ wheel → venv 安装 → Phase 3 triton → Phase 4 vLLM → Phase 5 压测。
++
++**本轮新坑**：pgrep 无 `-e` 选项（procps 版本差异，多模式用多行 pgrep）；PowerShell 内联 grep 引号剥离复发（多词 pattern 必须走脚本文件）。
++
++---
++
++## 13.2 PyTorch v2.13.0 构建完成（M4，2026-09-14 18:04）
++
++**修复链（每项独立根因）**：
++
++| # | 症状 | 根因 | 修复 |
++|---|---|---|---|
++| 1 | c10/hip 只有 CMakeLists.txt | 手动 cmake 不触发 HIPIFY codegen | 运行 `tools/amd_build/build_amd.py` |
++| 2 | ROCPROF_LIBRARY NOTFOUND | kineto 依赖 rocprofiler（TheRock 跳过） | `-DUSE_KINETO=OFF` |
++| 3 | mha_all_aot.hip L335/539/721 narrowing | clang23 拒绝 braced-init 的 (char) 收窄 | sed → `static_cast<c10::DeviceIndex>(...)` ×3（.bak-fix23） |
++| 4 | profiler/stubs/cuda.cpp 缺 roctracer/roctx.h | TheRock roctracer 头未进 dist | 从 rocALUTION dist/include/roctracer 拷入 dist/rocm/include |
++| 5 | setup.py 报 generator 不匹配 | pip 想用 Ninja，缓存是 Unix Makefiles | `export USE_NINJA=0` |
++| 6 | protobuf 装到 /usr/local/lib Permission denied | CMAKE_INSTALL_PREFIX 未设 | `-DCMAKE_INSTALL_PREFIX:PATH=<repo>/torch`（PackageData.cmake 约定） |
++
++**产物**：`wheelhouse/torch-2.13.0a0+gitcf30153-cp314-cp314-linux_riscv64.whl`（311MB）→ venv 安装 → GPU 冒烟：cuda available=True，device=AMD Radeon AI PRO R9700，matmul OK。`torch.version.hip=7.15.26366`。
++
++## 13.3 Phase 3/4：triton + vLLM（2026-09-14 20:00–23:00）
++
++- **triton 3.7.0+git80bc5c21**：wheel --no-deps 安装，与 torch 2.13 共存 OK。
++- **补丁 0001/0002 确认 docker-only**（Dockerfile.vllm_riscv64 配方），vLLM main 无需代码补丁；qwen3_5 原生支持。
++- **clang23 lld 回归**：`ld.lld: relocation refers to a symbol in a discarded section (.LEHB34/.LFB56673)` —— COMDAT+异常表 bug（新 dist clang 23 vs 旧栈 clang 20）。`CMAKE_HIP_SHARED_LINKER_FLAGS` 缓存项（UNINITIALIZED）不生效；直接改 rules.ninja 会被 pip 重新 configure 抹掉。**持久修复：vLLM CMakeLists.txt 尾部追加 foreach，对 _C/_rocm_C/_moe_C/_C_stable_libtorch/_moe_C_stable_libtorch/_rocm_C_skinny 设置 `LINK_FLAGS "-fuse-ld=bfd"`**。7 个 .so 全部链接成功（_C 120MB / _rocm_C 107MB / _C_stable_libtorch 41MB / _moe_C_stable_libtorch 28MB / cumem_allocator / fs_io_C / spinloop）。
++- **build_rust（cargo）**：openai-harmony git 依赖经 gh-proxy 拉取成功；`vllm-0.29.1.dev0+g98dff2a81.d20260914.rocm100` 安装完成。
++- numba 0.67.0 + llvmlite 0.49.0（镜像有 riscv64 wheel）。
++- **openai_harmony 桩 v0.2**：按 7.1 Dockerfile base64 配方重建，并补 RenderConversationConfig、HarmonyError（vLLM main 的 parser/harmony.py 需要全量 15 个名字）。
++- **amdsmi 27.0.0**：TheRock 构件 `core-amdsmi_run_generic/.../amd_smi/`（ctypes 包装，零编译）pip --no-deps 安装；解决 `rocm_platform_plugin()` 硬依赖（需 amdsmi_init + GPU handle>0）。
++- **torchvision 0.28.0 源码构建**：PyPI 0.2x 时代已不发 sdist（简单索引仅 0.1.6 tar.gz；wheel 无 cp314/riscv64）→ gh-proxy 拉 `v0.28.0` tarball（14.4MB），`pip wheel --no-deps --no-build-isolation` + torch/ROCM 环境 → `torchvision-0.28.0-cp314-cp314-linux_riscv64.whl`（1.2MB，CPU ops）→ 安装后 qwen3_5 导入链打通。
++
++## 13.4 Phase 5：serve 全链路 + 吞吐压测（2026-09-14 22:44–23:25）
++
++**启动链路全部打通**：platform(rocm/amdsmi) → ModelConfig(Qwen3_5ForConditionalGeneration) → transformers 5.16.1 权重加载 → Dynamo bytecode transform 32s → torch.compile 296s（AOT 缓存落盘）→ Qwen Triton kernel warmup（qwen3_5_text）→ CUDA graphs PIECEWISE(51)→FULL(11) → 引擎就绪。
++
++**压测命令**（用户指定）：
++
++```bash
++vllm bench throughput --model /models/Qwen3.5-9B --skip-mm-profiling \
++  --dataset-name random --random-input-len 1024 --random-output-len 256 \
++  --gpu-memory-utilization 0.95 --max_num_batched_tokens 8192 \
++  --num-prompts 512 --max-num-seqs 64 --num-warmups 8
++```
++
++**结果（p5-bench.log，EngineCore 正常 SIGTERM 收尾）**：
++
++| 指标 | 值 |
++|---|---|
++| Successful requests | 512 / 512（8 轮预热在前） |
++| 总输入 / 输出 tokens | 524,288（512×1024）/ 131,072（512×256） |
++| Benchmark duration | ≈190 s（512 ÷ 2.70） |
++| Request throughput | **2.70 req/s** |
++| Total token throughput | **3,454.11 tok/s** |
++| Output token throughput | **690.82 tok/s** |
++| 引擎稳态 decode（loggers.py 每 10s 采样） | 1,231–1,269 tok/s（Running: 64 reqs） |
++| 峰值 prefill | 6,431.3 tok/s |
++
++**压测所用 AMD ROCm 协议栈（自底向上，全部 riscv64 本地构建，ROCm 10.0）**：
++
++| 层 | 组件 | 版本 |
++|---|---|---|
++| 硬件 | AMD Radeon AI PRO R9700（Navi 48，gfx1201，RDNA4） | 32GB |
++| 内核 | Linux + amdgpu DRM/KFD | 7.0.0-31-generic（Ubuntu） |
++| 用户态运行时 | HSA/ROCr `libhsa-runtime64` | 1.21.0 |
++| HIP 运行时 | `libamdhip64` | 7.15.26366 |
++| 编译器 | AMD clang/llvm（TheRock 构建）+ `amd_comgr` | 23.0.0git / 3.3.0（链接器 lld→bfd 规避 vLLM COMDAT 回归） |
++| 数学库 | rocBLAS / hipBLAS / hipBLASLt / hipSPARSE / hipSOLVER / rocSOLVER / hipFFT / rocRAND / hipSPARSELt | 5.6 / 3.6 / 1.4 / 4.7 / 1.3 / — / 0.1 / 1.1 / 0.2.x |
++| 管理 | ROCm core / rocm_smi / amdsmi(Python) | 10.0.0 / 7.8.0 / 27.0.0+c4834e76455 |
++| Kernel/融合库 | aotriton_v2 0.12b（flash/autotune，预编译镜像，torch 取用）+ Triton | gfx1201 / 3.7.0+git80bc5c21 |
++| Python ML | PyTorch / torchvision / transformers / numba+llvmlite | 2.13.0a0+gitcf30153 / 0.28.0（源码构建） / 5.16.1 / 0.67.0+0.49.0 |
++| 推理引擎 | vLLM（VLLM_TARGET_DEVICE=rocm，chunked prefill，PIECEWISE+FULL CUDA graphs，torch.compile/AOT，LBHNC KV layout） | 0.29.1.dev0+g98dff2a81.d20260914.rocm100 |
++
++**里程碑 M4+M5 达成：TheRock 10.0 + PyTorch 2.13 + vLLM main 全栈 riscv64 本地构建，Qwen3.5-9B 推理压测跑通。**
++
++## 13.5 协议栈各组件仓库与版本清单（2026-09-14）
++
++> 所有 GitHub 仓库经 gh-proxy.com 镜像拉取，commit 与上游一致。
++
++| 层 | 组件 | 仓库 | 版本/commit | 本地路径 |
++|---|---|---|---|---|
++| 内核 | Linux amdgpu DRM/KFD | Ubuntu 仓库（系统自带，未构建） | 7.0.0-31-generic | /boot/vmlinuz-7.0.0-31-generic（系统） |
++| 构建编排 | TheRock 超级仓库 | github.com/ROCm/TheRock | 53cb0c12d（therock-10.0-3，2026-09-13） | /home/ubuntu/work/GitlabLeo/TheRock |
++| 编译器 | amd-llvm（clang/flang/lld） | github.com/ROCm/llvm-project | 8f497e0992fb（clang 23.0.0git，2026-07-28） | TheRock/compiler/amd-llvm |
++| 编译器 | HIPIFY | github.com/ROCm/HIPIFY | TheRock 锁定版 | TheRock 子模块（build 时取用） |
++| 编译器支撑 | rocm-cmake / half / SPIRV-LLVM-Translator / libhipcxx / mesa-fork | github.com/ROCm/* | TheRock 锁定版 | TheRock 子模块 |
++| 核心运行时 | rocm-systems 子仓（ROCr/HSA、HIP、rocm_smi、amdsmi、aqlprofile） | github.com/ROCm/rocm-systems | c4834e76455（therock-10.0-4，2026-09-13） | TheRock/rocm-systems |
++| ├─ | libhsa-runtime64 | （rocm-systems 内） | 1.21.0 | dist/rocm/lib/libhsa-runtime64.so.1.21.0 |
++| ├─ | libamdhip64（HIP API） | （rocm-systems 内 clr） | 7.15.26366 | dist/rocm/lib/libamdhip64.so.7.15.26366 |
++| ├─ | librocm_smi64 | （rocm-systems 内） | 7.8.0 | dist/rocm/lib/librocm_smi64.so.1 |
++| └─ | amdsmi Python 绑定 | （rocm-systems 内 core/amdsmi） | 27.0.0+c4834e76455 | build/artifacts/core-amdsmi_run_generic/.../amd_smi/ |
++| 数学库 | rocm-libraries 子仓（monorepo，24 个 projects/） | github.com/ROCm/rocm-libraries | 8d1ae90eff7（therock-10.0，2026-08-19） | TheRock/rocm-libraries |
++| ├─ | rocBLAS / hipBLAS / hipBLASLt | （monorepo projects/） | 5.6 / 3.6 / 1.4（soname） | dist/rocm/lib/lib*.so.* |
++| ├─ | hipSPARSE / hipSPARSELt / hipSOLVER / rocSOLVER | （monorepo projects/） | 4.7 / 0.2.x / 1.3 / soname 版 | dist/rocm/lib/lib*.so.* |
++| └─ | hipFFT / rocRAND / rocPRIM / composable_kernel / MIOpen 等 | （monorepo projects/） | 统一 10.0.0 | dist/rocm/lib/lib*.so.* |
++| ML kernel | aotriton（flash attention，预编译镜像直接下载） | github.com/ROCm/aotriton | release 0.12b（gfx120x tarball） | 无本地源码（tarball 随 torch 构建解包） |
++| Python ML | PyTorch | github.com/pytorch/pytorch | v2.13.0 @ cf30153c4c1（2026-07-03） | /home/ubuntu/work/GitlabLeo/PyTorch/pytorch |
++| Python ML | torchvision | github.com/pytorch/vision | v0.28.0 tag tarball 源码构建 | wheel: wheelhouse/torchvision-0.28.0-cp314-cp314-linux_riscv64.whl |
++| Python ML | Triton（RISC-V 适配 fork） | 内部 GitLab 10.128.118.42:9022/rv-rocm/triton | 80bc5c2（2026-07-30，3.7.0+git80bc5c21） | /home/ubuntu/LeoRocm/triton |
++| Python ML | transformers / numba+llvmlite | github.com/huggingface/transformers、numba | 5.16.1 / 0.67.0+0.49.0 | venv-torch/lib/python3.14/site-packages/（wheel） |
++| 推理引擎 | vLLM | github.com/vllm-project/vllm | main @ 98dff2a81d（2026-09-08；安装版本 0.29.1.dev0+g98dff2a81.d20260914.rocm100） | /home/ubuntu/work/GitlabLeo/VLLM/vllm |
++| 推理引擎 | openai-harmony（桩） | github.com/openai/harmony | 桩 v0.2（7.1 Dockerfile 配方 + 手工补 RenderConversationConfig/HarmonyError） | venv-torch/lib/python3.14/site-packages/openai_harmony/__init__.py |
++
++> 表中 dist/ 均指 /home/ubuntu/work/GitlabLeo/TheRock/build/dist/rocm/；TheRock/ 指 /home/ubuntu/work/GitlabLeo/TheRock/。
++
++### §13.5 要点补充
++
++- TheRock 10.0 架构变化：数学库收拢为 **rocm-libraries** git 子模块、运行时收拢为 **rocm-systems** git 子模块（均 tag `therock-10.0` 系），非独立版本 pin；amdsmi 版本串 `27.0.0+c4834e76455` 的后缀即 rocm-systems HEAD。
++- aotriton 是全栈唯一**未本地编译**的 GPU kernel 库：torch 构建时直接从 `github.com/ROCm/aotriton/releases/download/0.12b/aotriton-0.12b-images-amd-gfx120x.tar.gz` 取预编译镜像（flash attention 即来自它）。
++- 唯一非 GitHub 源：Triton 来自内部 GitLab（10.128.118.42:9022）的 rv-rocm RISC-V 适配 fork。
++- torch 链接的 `aotriton_v2`（§13.4 表）实际即上述 0.12b 预编译镜像内容。
++
++### 13.6 本地 checkout 路径与复现入口
++
++| 组件 | 服务器路径 | 构建入口 |
++|---|---|---|
++| TheRock 10.0 | /home/ubuntu/work/GitlabLeo/TheRock | cmake 全仓构建（本日记 §4–§12） |
++| 产物 dist | /home/ubuntu/work/GitlabLeo/TheRock/build/dist/rocm | —（所有上层构建的 ROCM_PATH） |
++| PyTorch v2.13.0 | /home/ubuntu/work/GitlabLeo/PyTorch/pytorch | scripts/p2_torch3.sh（hipify → cmake → ninja → bdist_wheel） |
++| vLLM main | /home/ubuntu/work/GitlabLeo/VLLM/vllm | VLLM_TARGET_DEVICE=rocm pip install .（CMakeLists 尾部 bfd foreach 必须保留） |
++| Triton fork | /home/ubuntu/LeoRocm/triton | 7.1 期已构建（wheel 3.7.0+git80bc5c21 复用） |
++| Python venv | /home/ubuntu/work/GitlabLeo/venv-torch | torch/triton/vllm/amdsmi/torchvision 全部装入 |
++| wheel 产物 | /home/ubuntu/work/GitlabLeo/wheelhouse/ | torch 311MB + torchvision 1.2MB |
++| 日志 | /home/ubuntu/work/GitlabLeo/{p2-torch-build,p4-vllm-build,p5-bench}.log | — |
+diff --git a/cmake/therock_primlibs_benchmark_deps.cmake b/cmake/therock_primlibs_benchmark_deps.cmake
+index 925fc0faa7efa6bde6e691a8fa8cc29b7b53d20d..6ac5afa11e82c92012c49ca71d93ce6eaba34824 100644
+--- a/cmake/therock_primlibs_benchmark_deps.cmake
++++ b/cmake/therock_primlibs_benchmark_deps.cmake
+@@ -10,7 +10,20 @@
+ #
+ # TODO(https://github.com/ROCm/TheRock/issues/4651): Remove once upstream
+ # rocPRIM adds its own find_package(amd_smi).
++#
++# fix #12 (riscv64, 2026-09-13): This file is included from generated
++# _init.cmake during project()'s CMAKE_PROJECT_TOP_LEVEL_INCLUDES phase,
++# i.e. BEFORE platform info is loaded. CMake >= 4.x (4.2.3) rejects
++# add_library(... SHARED IMPORTED) executed in that phase ("ADD_LIBRARY
++# called with SHARED option but the target platform does not support dynamic
++# linking" - rocRAND configure failures in v12 and v13). CMAKE_SYSTEM_
++# PROCESSOR is already set even in that phase (v13 proved it), so it cannot
++# serve as a phase probe. Instead, defer the real find_package to the LAST
++# step of the current project() call via CMAKE_PROJECT_INCLUDE: languages
++# are enabled by then, and the imported target still exists before any
++# benchmark subdirectory is processed.
+ 
+ if(NOT TARGET amd_smi)
+-  find_package(amd_smi REQUIRED CONFIG)
++  set(CMAKE_PROJECT_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/therock_amdsmi_deferred.cmake")
++  message(STATUS "amd_smi: deferring find_package to end of project() via CMAKE_PROJECT_INCLUDE")
+ endif()
+diff --git a/compiler/CMakeLists.txt b/compiler/CMakeLists.txt
+index b03d0587ac1c54549bb2b387ac6ff42ea8f4268a..15153d445b49dd62a385d96f755a602f9d588089 100644
+--- a/compiler/CMakeLists.txt
++++ b/compiler/CMakeLists.txt
+@@ -55,6 +55,16 @@ if(THEROCK_ENABLE_COMPILER)
+     message(STATUS "Using stable amd-llvm revision info: Repo='${LLVM_SMREV_REPO}', Revision='${LLVM_SMREV_REVISION}'")
+   endif()
+ 
++  # flang-rt REAL(16) F128 math library: libquadmath is only shipped by GCC on
++  # x86. On other targets (riscv64/aarch64, where long double is IEEE binary128),
++  # leave it empty so flang-rt maps REAL(16) to long double instead of requiring
++  # quadmath.h. (RISC-V port 2026-09-13)
++  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
++    set(THEROCK_FLANG_F128_MATH_LIB "libquadmath")
++  else()
++    set(THEROCK_FLANG_F128_MATH_LIB "")
++  endif()
++
+   therock_cmake_subproject_declare(amd-llvm
+     USE_DIST_AMDGPU_TARGETS
+     NO_INSTALL_RPATH  # See manual handling in the pre_hook.
+@@ -115,7 +125,7 @@ if(THEROCK_ENABLE_COMPILER)
+       -DLIBOMPTARGET_BUILD_DEVICE_FORTRT=${THEROCK_CONDITION_IS_NON_WINDOWS}
+       -DOFFLOAD_EXTERNAL_PROJECT_UNIFIED_ROCR=${THEROCK_CONDITION_IS_NON_WINDOWS}
+       -DLIBOMPTARGET_EXTERNAL_PROJECT_HSA_PATH=${THEROCK_ROCM_SYSTEMS_SOURCE_DIR}/projects/rocr-runtime
+-      -DFLANG_RUNTIME_F128_MATH_LIB=libquadmath
++      -DFLANG_RUNTIME_F128_MATH_LIB=${THEROCK_FLANG_F128_MATH_LIB}
+       -DRUNTIMES_amdgcn-amd-amdhsa_LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=${THEROCK_CONDITION_IS_NON_WINDOWS}
+       -DRUNTIMES_amdgcn-amd-amdhsa_LLVM_ENABLE_RUNTIMES=openmp
+       # ASAN features.
+diff --git a/compiler/pre_hook_amd-llvm.cmake b/compiler/pre_hook_amd-llvm.cmake
+index 32f25e937a62fe1f44af2bb39bfc5bd752d9c9dd..b67432d00c4e118c8f78926a5513c3049a6afe74 100644
+--- a/compiler/pre_hook_amd-llvm.cmake
++++ b/compiler/pre_hook_amd-llvm.cmake
+@@ -57,7 +57,17 @@ else()
+       set(RUNTIMES_amdgcn-amd-amdhsa_FLANG_RT_LIBC_PROVIDER "llvm")
+       set(RUNTIMES_amdgcn-amd-amdhsa_FLANG_RT_LIBCXX_PROVIDER "llvm")
+       set(RUNTIMES_amdgcn-amd-amdhsa_CACHE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/../compiler-rt/cmake/caches/GPU.cmake;${CMAKE_CURRENT_SOURCE_DIR}/../libcxx/cmake/caches/AMDGPU.cmake")
+-      set(FLANG_RUNTIME_F128_MATH_LIB "libquadmath")
++      # riscv64 guard (fix #8, 2026-09-13): libquadmath is x86-only. On
++      # riscv64 long double is IEEE binary128 (LDBL_MANT_DIG=113), so REAL(16)
++      # maps to long double/libm and no quadmath is needed. An unconditional
++      # set() here leaked into llvm/runtimes passthrough args and baked
++      # -DFLANG_RUNTIME_F128_MATH_LIB=libquadmath into the host runtimes-configure
++      # rule (v8.1 failure #2) even though the LLVM cache value was empty.
++      if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
++        set(FLANG_RUNTIME_F128_MATH_LIB "libquadmath")
++      else()
++        set(FLANG_RUNTIME_F128_MATH_LIB "")
++      endif()
+       set(LIBOMPTARGET_BUILD_DEVICE_FORTRT ON)
+       #TODO: Enable when HWLOC dependency is figured out
+       #set(LIBOMP_USE_HWLOC ON)
+diff --git a/math-libs/BLAS/CMakeLists.txt b/math-libs/BLAS/CMakeLists.txt
+index 03b097008268c73bfba71fbd258ebdbbaa206d58..3efeb2a7b97ad58e44a063eebeb727421f98dc39 100644
+--- a/math-libs/BLAS/CMakeLists.txt
++++ b/math-libs/BLAS/CMakeLists.txt
+@@ -12,7 +12,7 @@ cmake_path(APPEND _blas_hack_hip_dir lib/llvm OUTPUT_VARIABLE _toolchain_dir)
+ # on Posix.
+ set(optional_profiler_deps)
+ if(THEROCK_FLAG_INCLUDE_PROFILER)
+-  list(APPEND optional_profiler_deps roctracer rocprofiler-sdk)
++  list(APPEND optional_profiler_deps roctracer)
+ endif()
+ 
+ 
+@@ -166,6 +166,7 @@ therock_cmake_subproject_declare(hipBLASLt
+   CMAKE_ARGS
+     -DHIP_PLATFORM=amd
+     -DHIPBLASLT_ENABLE_BLIS=OFF  # TODO: Evaluate
++    -DHIPBLASLT_ENABLE_CLIENT=OFF
+     -DTENSILELITE_BUILD_TESTING=OFF
+     -DTENSILELITE_ENABLE_CLIENT=$<IF:$<BOOL:${WIN32}>,OFF,${THEROCK_BUILD_TESTING}>
+     -DHIPBLASLT_BUILD_TESTING=${THEROCK_BUILD_TESTING}
+@@ -190,7 +191,7 @@ therock_cmake_subproject_declare(hipBLASLt
+     therock-host-blas
+     ${hipBLASLt_rocRoller_runtime_deps}
+     ${hipBLASLt_runtime_deps}
+-    ${optional_profiler_deps}
++    roctracer
+   TEST_SUBPROJECTS
+     hipSPARSELt
+     MIOpen
+@@ -268,7 +269,7 @@ therock_cmake_subproject_declare(rocBLAS
+     hip-clr
+     hipBLASLt
+     ${rocBLAS_optional_runtime_deps}
+-    ${optional_profiler_deps}
++    roctracer
+   TEST_SUBPROJECTS
+     hipBLAS
+     rocSOLVER
+@@ -311,7 +312,7 @@ if(THEROCK_ENABLE_SPARSE)
+       therock-googletest
+     RUNTIME_DEPS
+       hip-clr
+-      ${optional_profiler_deps}
++      roctracer
+     TEST_SUBPROJECTS
+       hipSPARSE
+       rocSOLVER
+@@ -400,7 +401,7 @@ if(THEROCK_ENABLE_SPARSE)
+         origami
+         therock-host-blas
+         ${hipSPARSELt_runtime_deps}
+-        ${optional_profiler_deps}
++        roctracer
+       TEST_SUBPROJECTS
+     )
+     therock_cmake_subproject_glob_c_sources(hipSPARSELt
+diff --git a/math-libs/CMakeLists.txt b/math-libs/CMakeLists.txt
+index ecaf800f2a7f9307aa17c2f2e4bcda4904efb8aa..d26facf9739f96ea7542cac63a634356ce1c9ff6 100644
+--- a/math-libs/CMakeLists.txt
++++ b/math-libs/CMakeLists.txt
+@@ -572,7 +572,7 @@ endif(THEROCK_ENABLE_LIBHIPCXX)
+ # on Posix.
+ set(optional_profiler_deps)
+ if(THEROCK_FLAG_INCLUDE_PROFILER)
+-  list(APPEND optional_profiler_deps roctracer rocprofiler-sdk)
++  list(APPEND optional_profiler_deps roctracer)
+ endif()
+ 
+ # composable_kernel only supports a subset of gfx targets (per its own
+diff --git a/profiler/CMakeLists.txt b/profiler/CMakeLists.txt
+index 9ffb1e3a479d0fc95c1c929ee6f375faf471c5cc..7854e98392b3b9e8709ed98784990345182ac5d3 100644
+--- a/profiler/CMakeLists.txt
++++ b/profiler/CMakeLists.txt
+@@ -23,6 +23,7 @@ endif()
+ 
+ if(THEROCK_ENABLE_ROCPROFV3)
+ 
++  if(NOT THEROCK_SKIP_ROCPROFILER_SDK)
+   ##############################################################################
+   # rocprof-trace-decoder
+   # The trace decoder is responsible for decoding advanced thread traces from the
+@@ -44,6 +45,7 @@ if(THEROCK_ENABLE_ROCPROFV3)
+     LIB_NAMES
+       librocprof-trace-decoder.so
+   )
++  endif()
+ 
+   ##############################################################################
+   # aqlprofile
+@@ -87,6 +89,7 @@ if(THEROCK_ENABLE_ROCPROFV3)
+       aqlprofile
+   )
+ 
++  if(NOT THEROCK_SKIP_ROCPROFILER_SDK)
+   ##############################################################################
+   # rocprofiler-sdk
+   ##############################################################################
+@@ -177,6 +180,7 @@ if(THEROCK_ENABLE_ROCPROFV3)
+       librocprofiler-sdk-tool-kokkosp.so
+       librocprofv3-list-avail.so
+   )
++  endif()
+ 
+   ##############################################################################
+   # roctracer
+@@ -214,6 +218,7 @@ if(THEROCK_ENABLE_ROCPROFV3)
+   )
+   therock_cmake_subproject_activate(roctracer)
+ 
++  if(NOT THEROCK_SKIP_ROCPROFILER_SDK)
+   ##############################################################################
+   # Artifacts for rocprofiler-sdk (includes roctracer and rocprof-trace-decoder)
+   ##############################################################################
+@@ -233,6 +238,7 @@ if(THEROCK_ENABLE_ROCPROFV3)
+       roctracer
+       rocprof-trace-decoder
+   )
++  endif()
+ 
+ endif(THEROCK_ENABLE_ROCPROFV3)
+ 
+diff --git a/third-party/yaml-cpp/CMakeLists.txt b/third-party/yaml-cpp/CMakeLists.txt
+index c90f70f12e06f145ca3b94bcde8ad5934850da3e..0cba5fa1ae728dc13f76e9dac52c933be2af9702 100644
+--- a/third-party/yaml-cpp/CMakeLists.txt
++++ b/third-party/yaml-cpp/CMakeLists.txt
+@@ -16,6 +16,8 @@ therock_cmake_subproject_declare(therock-yaml-cpp
+   NO_MERGE_COMPILE_COMMANDS
+   OUTPUT_ON_FAILURE
+   EXTERNAL_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/source"
++  COMPILER_TOOLCHAIN
++    amd-llvm
+   BUILD_DEPS
+     therock-fmt
+   CMAKE_ARGS

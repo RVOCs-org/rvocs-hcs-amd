@@ -1,0 +1,5 @@
+# The build context is assembled precisely by scripts/05-image.sh; this is only a safety net
+.git
+*.log
+**/__pycache__
+**/*.pyc

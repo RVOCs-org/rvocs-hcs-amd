@@ -1,0 +1,5 @@
+[submodule "upstream/therock"]
+	path = upstream/therock
+	url = https://github.com/ROCm/TheRock.git
+	branch = main
+	shallow = false

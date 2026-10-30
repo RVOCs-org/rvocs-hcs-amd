@@ -1,0 +1,62 @@
+From f147697f8c10c8b83deb2c7c75be5287f4de9db6 Mon Sep 17 00:00:00 2001
+From: riscv-port <riscv-port@local>
+Date: Sun, 13 Sep 2026 00:00:09 +0800
+Subject: [PATCH] fix: resolve leftover merge conflict markers in
+ rocvirtual.cpp and hsa-runtime utils.h
+
+
+diff --git a/projects/clr/rocclr/device/rocm/rocvirtual.cpp b/projects/clr/rocclr/device/rocm/rocvirtual.cpp
+index d11fe1b0d9129fa966db10e170a78e8a42998700..83779e4d819fef8d782ec53ceb39d145c58343d3 100644
+--- a/projects/clr/rocclr/device/rocm/rocvirtual.cpp
++++ b/projects/clr/rocclr/device/rocm/rocvirtual.cpp
+@@ -40,8 +40,6 @@
+ #include <cstdarg>
+ #include <mutex>
+ 
+-<<<<<<< ours
+-=======
+ #if defined(__AVX__)
+ #if defined(__MINGW64__)
+ #include <intrin.h>
+@@ -54,7 +52,6 @@
+ static inline void _mm_sfence() { __sync_synchronize(); }
+ static inline void _mm_mfence() { __sync_synchronize(); }
+ #endif
+->>>>>>> theirs
+ 
+ /**
+  * HSA image object size in bytes (see HSA spec)
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/util/utils.h b/projects/rocr-runtime/runtime/hsa-runtime/core/util/utils.h
+index ab1b9bec55543dc3328377d8fb2cb388f99c5b30..e60c372b0deb15a864ef157ccc3c6bd5103816ab 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/util/utils.h
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/util/utils.h
+@@ -67,6 +67,8 @@
+ // PowerPC compatibility shim for x86 intrinsics
+ #define NO_WARN_X86_INTRINSICS
+ #include <x86intrin.h>
++#elif defined(__riscv)
++/* RISC-V: no x86intrin.h */
+ #endif
+ #endif
+ #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+@@ -80,20 +82,11 @@ extern uint8_t log_flags[8];
+ typedef unsigned int uint;
+ typedef uint64_t uint64;
+ 
+-<<<<<<< ours
+ // 2MB huge page size
+ #define GPU_HUGE_PAGE_SIZE (2 << 20)
+ 
+ // 4KB page size
+ #define DEFAULT_GPU_PAGE_SIZE (1 << 12)
+-=======
+-#if defined(__GNUC__)
+-#if defined(__i386__) || defined(__x86_64__)
+-#include <x86intrin.h>
+-#elif defined(__riscv)
+-/* RISC-V: no x86intrin.h */
+-#endif
+->>>>>>> theirs
+ 
+ void log_printf(const char* file, int line, const char* format, ...);
+ 

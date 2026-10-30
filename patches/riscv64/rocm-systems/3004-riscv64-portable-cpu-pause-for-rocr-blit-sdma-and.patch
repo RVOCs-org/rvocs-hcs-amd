@@ -1,0 +1,62 @@
+From c4834e76455d71d926eb29dd08e3f9a435ef6b6a Mon Sep 17 00:00:00 2001
+From: riscv-port <riscv-port@local>
+Date: Sun, 13 Sep 2026 00:00:09 +0800
+Subject: [PATCH] riscv64: portable CPU pause for rocr blit SDMA and clr
+ Os::spinPause
+
+
+diff --git a/projects/clr/rocclr/os/os.cpp b/projects/clr/rocclr/os/os.cpp
+index 0e500d68efd421a406d42c1d7c02acc1d45a2bf0..59185d9d3fc1fb7f08f677b7e1ce4b40e8da87f1 100644
+--- a/projects/clr/rocclr/os/os.cpp
++++ b/projects/clr/rocclr/os/os.cpp
+@@ -111,6 +111,9 @@ void Os::spinPause() {
+   _mm_pause();
+ #elif defined(ATI_ARCH_ARM)
+   __asm__ __volatile__("yield");
++#elif defined(__riscv)
++  // RISC-V port: Zihintpause hint instead of an empty spin body.
++  __asm__ __volatile__("pause");
+ #endif
+ }
+ 
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_blit_sdma.cpp b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_blit_sdma.cpp
+index cc71885b0dbfc853df8965fee5eb987181260f3b..6b599faa472ed6d0f8ebb47b5edb5028e1c384fa 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_blit_sdma.cpp
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_blit_sdma.cpp
+@@ -60,6 +60,18 @@
+ namespace rocr {
+ namespace AMD {
+ 
++// RISC-V port: x86 _mm_pause() is unavailable on riscv64. Use the Zihintpause
++// "pause" hint there, keep the x86 intrinsic elsewhere, yield as fallback.
++static inline void BlitCpuPause() {
++#if defined(__x86_64__) || defined(__i386__)
++  _mm_pause();
++#elif defined(__riscv)
++  __asm__ __volatile__("pause" ::: "memory");
++#else
++  os::YieldThread();
++#endif
++}
++
+ inline uint32_t ptrlow32(const void* p) {
+   return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p));
+ }
+@@ -1969,7 +1981,7 @@ char* BlitSdma<useGCR, scopeFields>::AcquireWriteAddress(uint32_t cmd_size, uint
+ 
+     // CAS failed -- reuse the observed value directly, skip redundant atomic Load.
+     curr_index = observed;
+-    _mm_pause();
++    BlitCpuPause();
+   }
+ 
+   return nullptr;
+@@ -2044,7 +2056,7 @@ void BlitSdma<useGCR, scopeFields>::PadRingToEnd(uint64_t curr_index) {
+   // Check whether the engine has finished using this region.
+   if (CanWriteUpto(new_index) == false) {
+     // Engine hasn't freed this region yet.  Pause briefly.
+-    _mm_pause();
++    BlitCpuPause();
+     return;
+   }
+ 

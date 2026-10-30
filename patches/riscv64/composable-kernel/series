@@ -1,0 +1,5 @@
+# composable-kernel patch series (applied in order with git apply)
+# Exported from upstream commits with git format-patch; submodule gitlinks and .gitmodules are stripped
+# Currently empty - patches are still to be imported.
+# Note: this directory is a subdirectory of rocm-libraries and a separate git
+#       repository (submodule), which is why it is declared as its own component.

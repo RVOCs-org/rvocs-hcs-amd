@@ -1,0 +1,66 @@
+name: checks
+
+# Lightweight CI (does not fetch the 30 GB source trees):
+#   1) syntax check for every shell script
+#   2) patch series integrity (files exist, naming, declared in components.map)
+#   3) presence of manifest.yaml and .gitmodules
+# A full "do the patches still apply cleanly" check needs the real source trees,
+# so run it locally:
+#   ./scripts/tools/patch.sh check --verbose
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shell-and-series:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          set -e
+          fail=0
+          for f in scripts/*.sh scripts/lib/*.sh scripts/tools/*.sh scripts/wheels/*.sh; do
+            [ -f "$f" ] || continue
+            if bash -n "$f"; then echo "OK   $f"; else echo "FAIL $f"; fail=1; fi
+          done
+          command -v shellcheck >/dev/null 2>&1 && shellcheck -S error scripts/*.sh scripts/lib/*.sh scripts/tools/*.sh scripts/wheels/*.sh || true
+          exit $fail
+
+      - name: Patch series integrity
+        run: |
+          set -e
+          if [ ! -d patches ]; then echo "no patches/ on this branch; skip"; exit 0; fi
+          fail=0
+          for map in patches/*/components.map; do
+            arch="$(basename "$(dirname "$map")")"
+            echo "== $arch components =="
+            cat "$map"
+            for series in "patches/$arch"/*/series; do
+              [ -f "$series" ] || continue
+              comp="$(basename "$(dirname "$series")")"
+              echo "-- $comp"
+              grep -qxE "^[^#[:space:]]*[[:space:]]" "$map" || true
+              awk -v c="$comp" '!/^[[:space:]]*#/ && NF>=2 && $1==c {found=1} END{exit !found}' "$map" \
+                || { echo "component $comp is not declared in components.map"; fail=1; }
+              while IFS= read -r p; do
+                case "$p" in ''|'#'*) continue ;; esac
+                if [ -f "patches/$arch/$comp/$p" ]; then
+                  echo "   ok  $p"
+                else
+                  echo "   MISSING $p"; fail=1
+                fi
+              done < "$series"
+            done
+          done
+          exit $fail
+
+      - name: Manifest sanity
+        run: |
+          set -e
+          test -f manifest.yaml || { echo "manifest.yaml missing"; exit 1; }
+          test -f .gitmodules  || { echo ".gitmodules missing"; exit 1; }
+          grep -q 'upstream/therock' .gitmodules || { echo "therock submodule not declared"; exit 1; }
+          echo "manifest OK"
