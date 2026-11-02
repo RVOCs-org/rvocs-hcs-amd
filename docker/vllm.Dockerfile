@@ -139,7 +139,19 @@ RUN set -eux; \
       echo "rccl fix enabled"; \
     else \
       : > /opt/stack/rccl_fix.env; \
-    fi
+    fi; \
+    # vLLM looks up the collective library itself (vllm/utils/nccl.py): it uses
+    # VLLM_NCCL_SO_PATH when set, otherwise "librccl.so.1" on ROCm. Point it at
+    # the RCCL that came from THIS ROCm build - a librccl from another ROCm
+    # release loads fine but fails at collective init ("HIP error: invalid
+    # argument"), so an explicit path is safer than relying on the search.
+    for so in /opt/rocm/lib/librccl.so.1 /opt/rocm/lib/librccl.so; do \
+      if [ -e "$so" ]; then \
+        printf 'export VLLM_NCCL_SO_PATH=%s\n' "$so" >> /opt/stack/rccl_fix.env; \
+        echo "vLLM will load RCCL from $so"; \
+        break; \
+      fi; \
+    done
 
 # ---------------------------------------------------------------------------
 # Wheel archive + benchmarks + image-time patches

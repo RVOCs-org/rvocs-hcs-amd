@@ -120,6 +120,26 @@ install_wheel() { # install_wheel <name-glob>
   run "$PIP" install -q --no-deps --force-reinstall "$WHEELHOUSE"/${n}-*.whl
 }
 
+# Multi-GPU capability check.
+# torch must carry the NCCL backend (on ROCm it is provided by RCCL). If it does
+# not, torch.distributed.is_nccl_available() is False and vLLM's tensor-parallel
+# (>1) silently falls back to gloo, whose all-reduce cannot be captured into a
+# CUDA graph -> "hipErrorStreamCaptureUnsupported: operation not permitted when
+# stream is capturing" -> the server fails to start with --compilation-config.
+# Single-card (TP=1) serving is unaffected, so this is a warning, not an error.
+check_torch_nccl() {
+  local out
+  out=$("$PY" -c 'import torch.distributed as d; print(d.is_nccl_available())' 2>/dev/null || echo "unknown")
+  if [ "$out" = "True" ]; then
+    log "torch NCCL backend: available (vLLM tensor-parallel > 1 supported)"
+  else
+    warn "torch has NO NCCL backend (torch.distributed.is_nccl_available()=$out)"
+    warn "  -> vLLM tensor-parallel (>1) falls back to gloo; CUDA graph capture then fails"
+    warn "     with 'hipErrorStreamCaptureUnsupported'. Build ROCm with RCCL and rebuild"
+    warn "     torch with USE_NCCL=1 to enable multi-GPU. Single-card (TP=1) is unaffected."
+  fi
+}
+
 # The order has hard dependencies:
 #   torch's setup.py needs build-time deps such as pyyaml/numpy/typing_extensions
 #   vLLM needs torch and triton already installed in the venv when it builds
@@ -133,6 +153,7 @@ wheels_source() {
   build_one torch
   install_wheel torch
   fix_torch_miopen_needed
+  check_torch_nccl
   log "torch: $("$PY" -c 'import torch;print(torch.__version__)' 2>/dev/null || echo 'pending check')"
 
   install_runtime_deps          # needed to build and to run vLLM

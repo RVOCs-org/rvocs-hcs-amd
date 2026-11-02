@@ -37,6 +37,34 @@ if [ -f tools/amd_build/build_amd.py ]; then
 fi
 
 echo "[wheels/torch] cmake configure"
+# --- NCCL / RCCL -------------------------------------------------------------
+# On ROCm, PyTorch's ProcessGroupNCCL is backed by RCCL. If the ROCm tree does
+# not ship RCCL, torch ends up with NO NCCL backend at all
+# (torch.distributed.is_nccl_available() == False): vLLM's tensor-parallel (>1)
+# then falls back to gloo, and gloo all-reduce cannot be captured into a CUDA
+# graph -> "hipErrorStreamCaptureUnsupported: operation not permitted when
+# stream is capturing" -> the server fails to start with --compilation-config.
+#
+# So: enable it whenever RCCL is present in the dist tree; otherwise keep it
+# off and warn loudly (single-card serving is unaffected).
+if [ -z "${USE_NCCL+x}" ]; then
+  _rccl=$(find "$DIST_DIR" -maxdepth 3 -name 'librccl.so*' 2>/dev/null | head -1)
+  if [ -n "$_rccl" ]; then
+    USE_NCCL=1
+    USE_RCCL=1
+    export NCCL_ROOT="$DIST_DIR"
+    export RCCL_ROOT="$DIST_DIR"
+    echo "[wheels/torch] RCCL found ($_rccl): building torch WITH the NCCL backend (TP>1 supported)"
+  else
+    USE_NCCL=0
+    USE_RCCL=0
+    echo "[wheels/torch] WARN: no librccl under $DIST_DIR -> torch is built WITHOUT the NCCL backend"
+    echo "[wheels/torch]       vLLM tensor-parallel (>1) will fall back to gloo and cannot use CUDA"
+    echo "[wheels/torch]       graphs. Single-card (TP=1) serving is unaffected."
+    echo "[wheels/torch]       To enable it: build ROCm with -DTHEROCK_ENABLE_RCCL=ON and rebuild torch."
+  fi
+fi
+
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DUSE_ROCM=ON \
@@ -44,8 +72,10 @@ cmake -S . -B build \
   -DUSE_FLASH_ATTENTION="${USE_FLASH_ATTENTION:-0}" \
   -DUSE_MEM_EFF_ATTENTION="${USE_MEM_EFF_ATTENTION:-0}" \
   -DUSE_MIOPEN="${USE_MIOPEN:-1}" \
-  -DUSE_RCCL="${USE_RCCL:-OFF}" \
-  -DUSE_NCCL="${USE_NCCL:-OFF}" \
+  -DUSE_RCCL="${USE_RCCL:-0}" \
+  -DUSE_NCCL="${USE_NCCL:-0}" \
+  -DNCCL_ROOT="${NCCL_ROOT:-$DIST_DIR}" \
+  -DRCCL_ROOT="${RCCL_ROOT:-$DIST_DIR}" \
   -DUSE_ROCM_CK_GEMM="${USE_ROCM_CK_GEMM:-OFF}" \
   -DUSE_ROCM_CK_SDPA="${USE_ROCM_CK_SDPA:-OFF}" \
   -DPYTORCH_ROCM_ARCH="$GPU_TARGET" \

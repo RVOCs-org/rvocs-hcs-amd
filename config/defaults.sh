@@ -116,6 +116,16 @@ components_flags() {
         # (The GCC15 <ciso646> #warning versus MIOpen's -Werror is handled by
         #  removing -Werror in patches/riscv64/rocm-libraries/2002.)
         -DTHEROCK_ENABLE_MIOPEN=ON
+        # RCCL: on ROCm, PyTorch's ProcessGroupNCCL is provided by RCCL. Without
+        # RCCL in the ROCm tree, torch is built WITHOUT any NCCL backend
+        # (torch.distributed.is_nccl_available() == False), vLLM's
+        # tensor-parallel (>1) falls back to gloo, and gloo's all-reduce cannot
+        # be captured into a CUDA graph ->
+        #   hipErrorStreamCaptureUnsupported: operation not permitted when stream is capturing
+        # so the server refuses to start whenever --compilation-config is used.
+        # Single-card (TP=1) serving does not need RCCL, but building it in by
+        # default keeps one image usable for both cases.
+        -DTHEROCK_ENABLE_RCCL=ON
       ) ;;
     all)
       THEROCK_CMAKE_ARGS+=( -DTHEROCK_ENABLE_ALL=ON ) ;;

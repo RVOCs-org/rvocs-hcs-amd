@@ -78,6 +78,40 @@ docker run -d --name vllm-tp2 --network=host --ipc=host \
 > **`--enforce-eager` 在多卡下基本是必需的**：RDNA4 上 CUDA/HIP graph 与 RCCL 组合容易卡死或结果异常，
 > 关掉 graph 捕获最稳（代价是首 token 延迟略高）。
 
+#### 多卡前提：torch 必须带 NCCL 后端（ROCm 上由 RCCL 提供）
+
+若 `torch.distributed.is_nccl_available()` 为 `False`，vLLM 的张量并行（>1）会**静默退回 gloo**，
+而 gloo 的 all-reduce 不能被捕获进 CUDA graph，表现为：
+
+```
+hipErrorStreamCaptureUnsupported: operation not permitted when stream is capturing
+```
+
+于是只要启动参数里带 `--compilation-config`（cudagraph 捕获），服务就起不来；
+`--enforce-eager` 虽能绕过，但 TP 走主机中转，压测数据没有参考意义。
+
+当前构建默认已处理：
+
+| 环节 | 默认行为 |
+| --- | --- |
+| ROCm 侧 | `ml` 组件预设带 `-DTHEROCK_ENABLE_RCCL=ON`，`dist/rocm/lib` 里会有 `librccl.so.1` |
+| torch 侧 | `scripts/wheels/torch.sh` 检测到 `librccl.so*` 时自动以 `USE_NCCL=1 USE_RCCL=1` 编译；检测不到则退回 0 并打印 WARN |
+| 构建期校验 | `--stage wheels` 结束会打印 `torch NCCL backend: available` 或明确的 WARN |
+| 镜像侧 | `rccl_fix.env` 额外写 `VLLM_NCCL_SO_PATH=/opt/rocm/lib/librccl.so.1`，让 vLLM 明确加载本镜像自带的 RCCL |
+
+快速自检：
+
+```bash
+docker run --rm --entrypoint /opt/venv-torch/bin/python <image> \
+  -c "import torch.distributed as d; print('nccl:', d.is_nccl_available(), 'gloo:', d.is_gloo_available())"
+```
+
+> RCCL 必须来自**同一次 ROCm 构建**。把别的发行版的 `librccl.so.1` 挂进容器通常能 dlopen 成功，
+> 但 collective init 会失败（`HIP error: invalid argument`）或报
+> `NCCL error: unhandled cuda error`。
+>
+> 单卡（TP=1）不受影响，不需要 RCCL。
+
 ### 常用环境变量
 
 | 变量 | 默认 | 说明 |
