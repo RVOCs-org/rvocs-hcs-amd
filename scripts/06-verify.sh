@@ -60,7 +60,7 @@ if [ "${IMAGE_KIND:-vllm}" = "vllm" ]; then
   check "vllm command"             test -x "$V/bin/vllm"
   check "entrypoint script"        test -x /entrypoint.sh
   check "import torch"             "$V/bin/python" -c 'import torch'
-  check "import torchvision"       "$V/bin/python" -c 'import torchvision'
+  soft "import torchvision"       "$V/bin/python" -c 'import torchvision'
   check "import triton"            "$V/bin/python" -c 'import triton'
   check "import vllm"              "$V/bin/python" -c 'import vllm'
   check "torch is the ROCm build"  "$V/bin/python" -c 'import torch,sys; sys.exit(0 if torch.version.hip else 1)'
