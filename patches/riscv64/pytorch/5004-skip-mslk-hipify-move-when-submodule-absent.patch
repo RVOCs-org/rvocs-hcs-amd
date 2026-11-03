@@ -1,0 +1,26 @@
+From: rvocs-hcs-amd <rvocs@example.com>
+Subject: [PATCH] build_amd.py: skip the mslk hipify-move step when third_party/mslk is absent
+
+The move step that copies the hipified tuning_cache.cuh into the mslk tree is
+only guarded by 'if not buck_build:', while the earlier append to
+extra_files is guarded by 'if mslk_original.exists()'.  A checkout that does
+not initialise torch's third_party submodules (and a gfx1201 build, where
+USE_MSLK defaults to OFF anyway) therefore aborts hipify with
+  Error: Source file .../third_party/mslk/include/mslk/utils/hip/tuning_cache.cuh does not exist
+and the whole wheels stage fails.  Skip the block when mslk is not present.
+---
+diff --git a/tools/amd_build/build_amd.py b/tools/amd_build/build_amd.py
+index 7f9289cae49..d6c1a6d346e 100755
+--- a/tools/amd_build/build_amd.py
++++ b/tools/amd_build/build_amd.py
+@@ -294,7 +294,9 @@ hipify_python.hipify(
+     hip_clang_launch=is_hip_clang(),
+ )
+ 
+-if not buck_build:
++if not buck_build and mslk_dir.exists():
++    # riscv64: third_party/mslk 未初始化（gfx1201 上 USE_MSLK=OFF），
++    # 无需搬运 hipify 产物；上游此处缺少 exists() 守卫会直接 sys.exit。
+     mslk_move_src = mslk_dir / "hip/tuning_cache.cuh"
+     mslk_move_dst = mslk_dir / "tuning_cache_hip.cuh"
+ 
