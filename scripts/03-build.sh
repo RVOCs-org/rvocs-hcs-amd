@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
+source "$SCRIPT_DIR/lib/dist-dev-artifacts.sh"
 if [ "$MODE" = prebuilt ]; then
   log "prebuilt mode needs no local compilation, skipping the build stage"
   exit 0
@@ -181,4 +182,5 @@ if [ "$DRY_RUN" != 1 ]; then
   fi
 fi
 
+ensure_dist_dev_artifacts
 log "build done"
