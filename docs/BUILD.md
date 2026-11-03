@@ -66,6 +66,30 @@ cmake --build upstream/therock/build -j <jobs>
 注意：同一构建目录不能换 family 重配；已有 `CMakeCache.txt` 时自动跳过 configure 直接增量；
 `USE_CCACHE=0` 可关闭 ccache。
 
+#### GPU 架构会被钉到 `--gpu` 选中的那一个
+
+TheRock 把 `THEROCK_AMDGPU_FAMILIES` 展开成 per-arch 列表后**没有写回 cache**，
+子项目拿到的是空 `GPU_TARGETS`。于是凡是 CMakeLists 里有默认值兜底的组件，就会按
+它支持的**全部 GPU** 来编 —— RCCL 的 `projects/rccl/CMakeLists.txt` 里
+`set(GPU_TARGETS "${DEFAULT_GPUS}")` 就是如此。本机实测（gfx1201 / R9700）：
+
+| | rccl 配置到的 arch | rccl ninja 边数 | 9 小时后 gfx1201 的 .o |
+| --- | --- | --- | --- |
+| 不钉 | 23 个（gfx900…gfx1036、gfx1100…） | 70162 | **0 个**（全编了用不到的架构） |
+| 钉住 | `gfx1200;gfx1201` | 5790 | 1254 个 |
+
+所以 `03-build.sh` 现在会把解析出的 arch 显式传给 cmake：
+
+```
+-DTHEROCK_AMDGPU_TARGETS=<gfx arch>
+-DTHEROCK_AMDGPU_DIST_BUNDLE_NAME=<family>   # 只影响产物命名，缺了会报
+                                            # "More than one AMDGPU target bundle selected"
+-DTHEROCK_TEST_AMDGPU_TARGETS=<gfx arch>
+```
+
+`THEROCK_PIN_AMDGPU_TARGET=0` 可关掉这个行为（需要多架构分发时用）；
+`THEROCK_EXTRA_ARGS` 里自己传的 `-DTHEROCK_AMDGPU_TARGETS=` 仍会覆盖它。
+
 ### wheels
 
 | 模式 | 做法 | 适用 |

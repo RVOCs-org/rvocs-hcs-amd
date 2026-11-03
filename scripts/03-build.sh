@@ -42,6 +42,36 @@ if [ "$ARCH" = riscv64 ] && [ "${THEROCK_BUILD_TESTING:-0}" != 1 ]; then
   CMAKE_ARGS+=( -DBUILD_TESTING=OFF )
 fi
 
+# ---- pin the GPU architecture ----------------------------------------------
+# TheRock expands THEROCK_AMDGPU_FAMILIES into a per-arch target list, but that
+# expansion only lives in a local scope: the THEROCK_AMDGPU_TARGETS cache entry
+# ends up EMPTY, so subprojects get configured with an empty GPU_TARGETS. Any
+# component whose CMakeLists has a built-in default then builds for every GPU it
+# knows about - RCCL does exactly that (`GPU_TARGETS` defaults to `DEFAULT_GPUS`
+# in projects/rccl/CMakeLists.txt). Measured on this tree (gfx1201 / R9700):
+#
+#   unpinned : rccl configured with 23 architectures -> 70162 ninja edges,
+#              and after ~9 hours gfx1201 still had zero object files,
+#   pinned   : rccl configured with gfx1200;gfx1201   -> 5790 ninja edges.
+#
+# So pin the resolved arch explicitly. Notes:
+#   * THEROCK_AMDGPU_DIST_BUNDLE_NAME must be given too, otherwise TheRock
+#     aborts with "More than one AMDGPU target bundle selected
+#     (gfx120X-all;gfx1201)" - the family and the explicit target are both
+#     counted as bundle selections. It only affects artifact naming
+#     (therock_artifacts.cmake), not the target set.
+#   * Keep the bundle name equal to the family so artifact names stay stable.
+#   * A user-supplied -DTHEROCK_AMDGPU_TARGETS in THEROCK_EXTRA_ARGS (below)
+#     still wins, since later -D arguments override earlier ones.
+#   * THEROCK_PIN_AMDGPU_TARGET=0 restores the old (multi-arch) behaviour.
+if [ -n "${GPU_TARGET:-}" ] && [ "${THEROCK_PIN_AMDGPU_TARGET:-1}" = 1 ]; then
+  CMAKE_ARGS+=(
+    "-DTHEROCK_AMDGPU_TARGETS=$GPU_TARGET"
+    "-DTHEROCK_AMDGPU_DIST_BUNDLE_NAME=${GPU_FAMILY:-$GPU_TARGET}"
+    "-DTHEROCK_TEST_AMDGPU_TARGETS=$GPU_TARGET"
+  )
+fi
+
 # Extra cmake arguments (space separated), e.g.:
 #   THEROCK_EXTRA_ARGS="-DTHEROCK_ENABLE_RCCL=ON -DTHEROCK_BUNDLE_3RDPARTY=OFF"
 if [ -n "$THEROCK_EXTRA_ARGS" ]; then
