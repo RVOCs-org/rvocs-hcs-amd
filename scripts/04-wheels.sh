@@ -161,16 +161,18 @@ wheels_source() {
   build_one triton
   install_wheel triton
 
-  # With "ROCm torch + no GPU on the build host", torchvision compiles both its
-  # hipified vision_hip.cpp and the original vision.cpp, so linking fails with
-  #   multiple definition of `vision::cuda_version()'
-  # The vLLM core does not depend on torchvision, so skip it by default; enable
-  # with BUILD_TORCHVISION=1.
-  if [ "${BUILD_TORCHVISION:-0}" = 1 ]; then
+  # torchvision is REQUIRED at serving time, not optional: vLLM's model
+  # architecture inspection imports it, and without it the server fails with
+  #   Error in inspecting model architecture 'Qwen3_5ForConditionalGeneration'
+  # (observed on a real machine with a v0.2.0 image that skipped this stage).
+  # scripts/wheels/torchvision.sh builds a CPU-only wheel on purpose -- it must
+  # NOT see ROCM_HOME, otherwise setup.py hipifies vision.cpp and the link dies
+  # on "multiple definition of `vision::cuda_version()'".
+  if [ "${BUILD_TORCHVISION:-1}" = 1 ]; then
     build_one torchvision
     install_wheel torchvision
   else
-    log "skipping torchvision (BUILD_TORCHVISION=0; the vLLM core does not need it)"
+    warn "skipping torchvision (BUILD_TORCHVISION=0) -- vLLM model inspection will fail"
   fi
 
   build_one vllm
@@ -201,11 +203,20 @@ install_runtime_deps() {
   #   pycountry   : needed by mistral_common's language_code; vLLM imports it
   #                 unconditionally through transformers.MistralCommonBackend
   #   mistral_common (without [image]): Mistral-family models without pulling opencv
+  #   xgrammar / apache-tvm-ffi:
+  #                 vllm/parser/harmony.py imports xgrammar at module level, and
+  #                 xgrammar needs tvm_ffi. They are NOT installed by the
+  #                 requirements pass above: vLLM pins them with a
+  #                 "platform_machine == 'x86_64' or ... 'aarch64'" marker that
+  #                 has no riscv64, so pip silently skips them. Only sdist
+  #                 exists for riscv64, so this compiles both from source.
   run "$PIP" install -q --index-url "$idx" \
     numpy fastapi uvicorn pydantic tokenizers safetensors huggingface_hub \
     psutil requests tqdm msgspec partial_json_parser cloudpickle typing-inspection \
     jsonschema openai prometheus-fastapi-instrumentator sentencepiece \
     transformers cbor2 pycountry mistral_common || true
+  run "$PIP" install --index-url "$idx" apache-tvm-ffi xgrammar \
+    || warn "xgrammar/tvm_ffi install failed -- vLLM import of parser/harmony will fail"
 }
 
 # ---------------------------------------------------------------------------
@@ -229,12 +240,25 @@ esac
 if [ "$DRY_RUN" != 1 ]; then
   log "verifying imports ..."
   "$PY" - <<'PYEOF'
-import os
 import sys
-# torchvision is skipped by default (BUILD_TORCHVISION=0), so check it only when built
-mods = ["torch", "triton", "vllm"]
-if os.environ.get("BUILD_TORCHVISION", "0") == "1":
-    mods.insert(1, "torchvision")
+# Everything here is a hard requirement at serving time, so check it always.
+# These two in particular were missed by earlier builds and only showed up on a
+# real machine:
+#   torchvision    -> vLLM model architecture inspection
+#                     ("Error in inspecting model architecture 'Qwen3_5...'")
+#   xgrammar       -> vllm/parser/harmony.py imports it at module level, and it
+#                     in turn needs tvm_ffi (imported under the name tvm_ffi)
+# The last entry exercises vLLM's real import path instead of just the package
+# name, which is what actually breaks in the field.
+mods = [
+    "torch",
+    "torchvision",
+    "triton",
+    "xgrammar",
+    "tvm_ffi",
+    "vllm",
+    "vllm.parser.harmony",
+]
 missing = []
 for m in mods:
     try:

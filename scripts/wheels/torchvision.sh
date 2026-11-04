@@ -11,14 +11,27 @@ mkdir -p "$WHEELHOUSE"
 cd "$SRC"
 
 export MAX_JOBS="${JOBS:-32}"
-export PYTORCH_ROCM_ARCH="$GPU_TARGET"
-export ROCM_PATH="$DIST_DIR"
 export PATH="$DIST_DIR/bin:$DIST_DIR/lib/llvm/bin:$PATH"
 export LD_LIBRARY_PATH="$DIST_DIR/lib:${LD_LIBRARY_PATH:-}"
-# A CPU-only build is the default (matching the validated build: the wheel is
-# only 1.2 MB). Set TORCHVISION_CUDA=1 to build the GPU extensions, which needs
-# a usable GPU on the build host.
-if [ "${TORCHVISION_CUDA:-0}" = 1 ]; then export FORCE_CUDA=1; fi
+
+# CPU-only build is the default (the validated wheel is ~1 MB), and it is the
+# ONLY variant that links on a build host without a GPU.
+#
+# Do not export ROCM_PATH / HIP_PATH / ROCM_HOME / PYTORCH_ROCM_ARCH here:
+# torchvision's setup.py reads ROCM_HOME and concludes "this is a ROCm build"
+# (IS_ROCM=True), hipifies csrc/vision.cpp into vision_hip.cpp and then compiles
+# BOTH files, so linking fails with
+#     multiple definition of `vision::cuda_version()'
+# With ROCM_HOME unset it stays a plain CPU build and links fine.
+# (This is why the stage used to be skipped with BUILD_TORCHVISION=0 -- but vLLM's
+# model-architecture inspection imports torchvision, so it cannot be skipped.)
+if [ "${TORCHVISION_CUDA:-0}" = 1 ]; then
+  export FORCE_CUDA=1
+  export PYTORCH_ROCM_ARCH="$GPU_TARGET"
+  export ROCM_PATH="$DIST_DIR"
+else
+  unset ROCM_PATH HIP_PATH ROCM_HOME PYTORCH_ROCM_ARCH FORCE_CUDA
+fi
 export TORCHVISION_USE_NVJPEG=0
 export TORCHVISION_USE_VIDEO_CODEC=0
 

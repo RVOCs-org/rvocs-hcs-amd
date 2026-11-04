@@ -60,8 +60,16 @@ if [ "${IMAGE_KIND:-vllm}" = "vllm" ]; then
   check "vllm command"             test -x "$V/bin/vllm"
   check "entrypoint script"        test -x /entrypoint.sh
   check "import torch"             "$V/bin/python" -c 'import torch'
-  soft "import torchvision"       "$V/bin/python" -c 'import torchvision'
+  # torchvision is a hard requirement, not an optional extra: vLLM's model
+  # architecture inspection imports it and the server refuses to start without
+  # it ("Error in inspecting model architecture 'Qwen3_5ForConditionalGeneration'").
+  check "import torchvision"       "$V/bin/python" -c 'import torchvision'
   check "import triton"            "$V/bin/python" -c 'import triton'
+  # xgrammar (plus its tvm_ffi dependency) is imported at module level by
+  # vllm/parser/harmony.py; vLLM's own requirements marker excludes riscv64, so
+  # it has to be installed explicitly and checked explicitly.
+  check "import xgrammar + tvm_ffi" "$V/bin/python" -c 'import xgrammar, tvm_ffi'
+  check "import vllm.parser.harmony" "$V/bin/python" -c 'import vllm.parser.harmony'
   check "import vllm"              "$V/bin/python" -c 'import vllm'
   check "torch is the ROCm build"  "$V/bin/python" -c 'import torch,sys; sys.exit(0 if torch.version.hip else 1)'
   # The vllm CLI infers the device type (torch.cuda / amdsmi), which necessarily
