@@ -61,6 +61,14 @@ framework_sources:            # only needed with --wheel-mode source (riscv64)
     these sources are not fetched.
     riscv64 source builds use the porting pins below (single branch).
 
+framework_versions:           # human-readable version of each framework_sources pin
+  pytorch: 2.13.0a0           # release/2.13 (version.txt)
+  torchvision: 0.28.0         # tag v0.28.0
+  triton: 3.7.0               # tag v3.7.0
+  vllm: 0.29.0                # tag v0.29.0 (the wheel built from that commit
+                              #   self-reports 0.29.1.dev0+g98dff2a81, a
+                              #   setuptools-scm artifact, not a release)
+
 images:
   kinds:
     vllm: ROCm + torch/triton/torchvision/vLLM with a vllm serve entrypoint (default artifact)
