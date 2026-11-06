@@ -10,7 +10,11 @@
 # the base used when the patches were exported, otherwise git apply conflicts:
 #   pytorch     cf30153c4c  release/2.13 commit from 2026-09 (version.txt = 2.13.0a0)
 #   triton      5f3f125e8f  "[release 3.7] Release Triton to pypi" (= v3.7.0)
-#   vllm        98dff2a81d  main commit from 2026-09-08 (0.1.dev1)
+#   vllm        98dff2a81d  = upstream tag v0.29.0 (2026-09-08). A plain git
+#                           checkout reports 0.1.dev1: vllm/version.py falls
+#                           back to that string when the generated
+#                           _version.py is absent; the built wheel reports
+#                           0.29.1.dev0+g98dff2a81.d20260914
 #   torchvision v0.28.0     no patches, pure upstream
 # ============================================================================
 
