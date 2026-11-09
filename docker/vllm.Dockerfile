@@ -140,6 +140,12 @@ RUN set -eux; \
     else \
       : > /opt/stack/rccl_fix.env; \
     fi; \
+    # vLLM's own PYNCCL all-reduce is NOT cudagraph-capture safe on this stack:
+    # at TP>=2 the capture aborts with hipErrorInvalidValue right after
+    # "Profiling CUDA graph memory". torch.distributed's ProcessGroupNCCL has a
+    # dedicated capture path and works (verified: 35B-A3B TP=2 -> 55 s,
+    # 122B-A10B TP=4 -> 94 s). Keep it overridable from the environment.
+    printf 'export VLLM_DISABLE_PYNCCL="${VLLM_DISABLE_PYNCCL:-1}"\n' >> /opt/stack/rccl_fix.env; \
     # vLLM looks up the collective library itself (vllm/utils/nccl.py): it uses
     # VLLM_NCCL_SO_PATH when set, otherwise "librccl.so.1" on ROCm. Point it at
     # the RCCL that came from THIS ROCm build - a librccl from another ROCm
