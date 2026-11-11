@@ -184,6 +184,50 @@ wheels_source() {
 install_runtime_deps() {
   local idx="${PIP_INDEX_URL:-https://pypi.org/simple}"
   log "installing vLLM runtime dependencies ($idx)"
+  # Most of vLLM's binary dependencies have no riscv64 wheel on PyPI, so pip
+  # falls back to building them from sdist. Measured on this machine that costs
+  # roughly an hour: numpy ~11 min, pillow ~12, grpcio ~10, apache-tvm-ffi ~7.5,
+  # sentencepiece ~4.5, cryptography ~3.6, cbor2 ~2.7, cffi/harmony/uvloop ~2
+  # each, tiktoken ~1.7, outlines_core ~1.4, pyyaml ~1, psutil <1.
+  #
+  # RuyiRepo publishes prebuilt manylinux_2_38_riscv64 wheels for most of them,
+  # so install the exact versions this image was validated with, using --no-deps
+  # (version resolution stays with the requirements pass below) and
+  # --only-binary=:all: (never silently fall back to an sdist here).
+  #
+  # Deliberately NOT taken from RuyiRepo:
+  #   grpcio   - repository stops at 1.85.0rc1; the validated build is 1.85.1
+  #   psutil   - repository stops at 6.0.0; validated is 7.2.2 and it compiles
+  #              in well under a minute
+  #   xgrammar / vllm / torch / triton / torchvision
+  #            - no usable riscv64 wheel anywhere (xgrammar/vllm), or the
+  #              available wheel is the CPU build (torch/triton)
+  # Set USE_RUYIREPO=0 to reproduce the old from-source behaviour.
+  local ruyi="${RUYIREPO_INDEX:-https://ruyirepo.ruyicommunity.cn/pypi/simple/}"
+  RUYI_PREINSTALL_OK=0
+  if [ "${USE_RUYIREPO:-1}" = 1 ]; then
+    log "pre-installing riscv64 wheels from RuyiRepo"
+    if run "$PIP" install -q --index-url "$ruyi" --no-deps --only-binary=:all: \
+        numpy==2.5.4 \
+        pillow==13.0.0 \
+        pyyaml==6.0.3 \
+        cbor2==6.2.0.post2 \
+        tiktoken==0.14.0 \
+        sentencepiece==0.2.2 \
+        cryptography==50.0.2 \
+        cffi==2.1.1 \
+        openai-harmony==0.0.8 \
+        outlines-core==0.2.14 \
+        uvloop==0.23.0 \
+        apache-tvm-ffi==0.1.15.post2; then
+      RUYI_PREINSTALL_OK=1
+      log "RuyiRepo pre-install ok (12 packages, no source build)"
+    else
+      warn "RuyiRepo pre-install failed; falling back to PyPI/source builds"
+    fi
+  else
+    log "RuyiRepo pre-install disabled (USE_RUYIREPO=0)"
+  fi
   # Use vLLM's own requirements - a hand-maintained subset always misses something
   # (cbor2 for example) - but drop:
   #   torch/triton and friends: otherwise pip replaces our self-built wheels
@@ -215,8 +259,15 @@ install_runtime_deps() {
     psutil requests tqdm msgspec partial_json_parser cloudpickle typing-inspection \
     jsonschema openai prometheus-fastapi-instrumentator sentencepiece \
     transformers cbor2 pycountry mistral_common || true
-  run "$PIP" install --index-url "$idx" apache-tvm-ffi xgrammar \
-    || warn "xgrammar/tvm_ffi install failed -- vLLM import of parser/harmony will fail"
+  # xgrammar has no riscv64 wheel on either index, so it is always a source
+  # build; apache-tvm-ffi comes from RuyiRepo when that succeeded above.
+  if [ "${RUYI_PREINSTALL_OK:-0}" = 1 ]; then
+    run "$PIP" install --index-url "$idx" xgrammar \
+      || warn "xgrammar install failed -- vLLM import of parser/harmony will fail"
+  else
+    run "$PIP" install --index-url "$idx" apache-tvm-ffi xgrammar \
+      || warn "xgrammar/tvm_ffi install failed -- vLLM import of parser/harmony will fail"
+  fi
 }
 
 # ---------------------------------------------------------------------------
