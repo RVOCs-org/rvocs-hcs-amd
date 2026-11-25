@@ -1,8 +1,12 @@
 name: runner-smoke
 
-# P0 冒烟：只验证 self-hosted riscv64 runner 与 GitHub 侧 action 运行时是否可用。
-# 不碰构建产物、不推镜像、不需要任何 secret。
-# 触发：推送到任意 ci/** 分支，或手动 dispatch。
+# P0 冒烟（无 action 版）：验证 self-hosted riscv64 runner 能执行 job。
+#
+# 为什么不用 actions/checkout@v4 和 actions/upload-artifact@v4：
+#   本机 codeload.github.com 被墙（20s 超时），所有 JS action 都要从 codeload
+#   下载 tar.gz，会卡住直到 job 超时。构建机已有持久化仓库（RVOCS_ROOT），
+#   产物又落在共享文件系统上，因此 checkout / artifact 都不需要。
+#   触发：推送到任意 ci/** 分支，或手动 dispatch。
 
 on:
   push:
@@ -16,6 +20,10 @@ concurrency:
   group: runner-smoke-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  RVOCS_ROOT: /home/ubuntu/RVOCs-CICD/rvocs-hcs-amd
+  LOG_ROOT: /home/ubuntu/RVOCs-CICD/logs/ci-smoke
+
 jobs:
   smoke:
     runs-on: [self-hosted, linux, riscv64, amd-gpu]
@@ -25,7 +33,8 @@ jobs:
         run: |
           echo "runner_name=${RUNNER_NAME:-unknown}"
           echo "runner_os=${RUNNER_OS:-unknown} arch=${RUNNER_ARCH:-unknown}"
-          env | grep -E '^RUNNER_(NAME|OS|ARCH|WORKSPACE|TRACKING_ID)=' | sort
+          echo "workspace=${GITHUB_WORKSPACE}"
+          env | grep -E '^RUNNER_(NAME|OS|ARCH|TRACKING_ID)=' | sort
 
       - name: Host facts
         run: |
@@ -35,16 +44,14 @@ jobs:
           df -h / | tail -1
           echo "kernel=$(uname -r)"
 
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Checkout proof (Node action on riscv64)
+      - name: Repo state (no checkout needed)
         run: |
-          echo "head=$(git rev-parse --short HEAD)"
-          echo "tracked_files=$(git ls-files | wc -l)"
-          ls -1 | head -10
+          R="$RVOCS_ROOT"
+          echo "root=$(realpath "$R")"
+          echo "root_head=$(git -C "$R" rev-parse HEAD)"
+          echo "event_sha=${GITHUB_SHA}"
+          echo "dirty_entries=$(git -C "$R" status --porcelain=v1 | wc -l)"
+          echo "workflows=$(ls -1 "$R/.github/workflows" 2>/dev/null | tr '\n' ' ')"
 
       - name: Docker (passwordless, no sudo)
         run: |
@@ -71,27 +78,23 @@ jobs:
           exec 9>/var/lock/rvocs-ci.lock && echo "ci_lock=OK"
           exec 8>/var/lock/rvocs-gpu.lock && echo "gpu_lock=OK"
 
-      - name: Create evidence file
+      - name: Write evidence to shared filesystem
         run: |
-          mkdir -p /tmp/smoke
+          OUT="$LOG_ROOT/${GITHUB_RUN_ID}"
+          mkdir -p "$OUT"
           {
             echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
             echo "sha=${GITHUB_SHA}"
             echo "ref=${GITHUB_REF}"
             echo "runner=${RUNNER_NAME}"
+            echo "root_head=$(git -C "$RVOCS_ROOT" rev-parse HEAD)"
             uname -a
-            nproc
-            docker version --format 'server={{.Server.Version}}'
-          } > /tmp/smoke/evidence.txt
-          cat /tmp/smoke/evidence.txt
-
-      - name: Upload artifact (Node action on riscv64)
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-${{ github.run_id }}
-          path: /tmp/smoke/evidence.txt
-          retention-days: 3
-          if-no-files-found: error
+            echo "nproc=$(nproc)"
+            docker version --format 'docker_server={{.Server.Version}}'
+          } > "$OUT/evidence.txt"
+          cat "$OUT/evidence.txt"
+          echo "saved_to=$OUT/evidence.txt"
 
       - name: Summary
         if: always()
