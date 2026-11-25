@@ -80,6 +80,31 @@ if [ -n "$THEROCK_EXTRA_ARGS" ]; then
   CMAKE_ARGS+=( $THEROCK_EXTRA_ARGS )
 fi
 
+# Memory safety for the compiler subproject (OOM post-mortem 2026-11-25).
+# At -j64 the LLVM/flang compile peaked past 121 GB: one cc1plus compiling flang
+# objects holds ~2.7 GB RSS, the kernel OOM-killed compilers at 17:27 and the
+# whole host wedged (sshd stopped forking, the CI job lost its runner). TheRock
+# forwards these two knobs into the amd-llvm subproject, whose ninja ignores the
+# top-level -j:
+#   FLANG_PARALLEL_COMPILE_JOBS  cap concurrent flang compiles (the memory hog)
+#   LLVM_PARALLEL_LINK_JOBS      cap concurrent lld links (also memory heavy)
+FLANG_COMPILE_JOBS="${FLANG_COMPILE_JOBS:-24}"
+LLVM_LINK_JOBS="${LLVM_LINK_JOBS:-8}"
+CMAKE_ARGS+=(
+  "-DFLANG_PARALLEL_COMPILE_JOBS=$FLANG_COMPILE_JOBS"
+  "-DLLVM_PARALLEL_LINK_JOBS=$LLVM_LINK_JOBS"
+)
+if [ "${DRY_RUN:-0}" != 1 ] && [ -f "$THEROCK_BUILD/CMakeCache.txt" ]; then
+  for kv in "FLANG_PARALLEL_COMPILE_JOBS=$FLANG_COMPILE_JOBS" "LLVM_PARALLEL_LINK_JOBS=$LLVM_LINK_JOBS"; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    cv="$(sed -n "s/^${k}:[A-Z]*=//p" "$THEROCK_BUILD/CMakeCache.txt" | head -1)"
+    if [ "$cv" != "$v" ]; then
+      RECONFIGURE=1
+      log "cache $k='$cv' -> '$v' -> forcing RECONFIGURE=1"
+    fi
+  done
+fi
+
 # ccache (optional, speeds up repeated builds significantly)
 # Disabled by default on riscv64: the combination of ccache's --offload-compress
 # with amdclang device code is unverified on riscv and the validated build does
