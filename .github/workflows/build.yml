@@ -165,6 +165,10 @@ jobs:
   # ---------------------------------------------------------------- L3 image --
   image:
     needs: wheels
+    # Temporary validation tag (v*-nodep) skips the SWR push and the GPU
+    # stage: both need secrets.SWR_USER/SWR_PASSWORD and the gpu-approval
+    # Environment, which are intentionally not configured yet.
+    if: ${{ !contains(github.ref_name, '-nodep') }}
     runs-on: [self-hosted, linux, riscv64]
     timeout-minutes: 90
     outputs:
@@ -218,6 +222,7 @@ jobs:
   # --------------------------------------------------------------- L4 verify --
   verify:
     needs: image
+    if: ${{ !contains(github.ref_name, '-nodep') }}
     runs-on: [self-hosted, linux, riscv64, amd-gpu]
     timeout-minutes: 90
     concurrency:
@@ -260,7 +265,7 @@ jobs:
     # gh release upload 需要写权限；顶层为只读，故在 job 级放开
     permissions:
       contents: write
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-nodep')
     needs: [image, verify]
     runs-on: [self-hosted, linux, riscv64]
     timeout-minutes: 30
