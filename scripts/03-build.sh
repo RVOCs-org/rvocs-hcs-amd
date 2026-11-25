@@ -223,6 +223,21 @@ if [ "$DRY_RUN" != 1 ]; then
 fi
 
 log "compiling (parallel=$JOBS)... log: $LOG_DIR/build.log"
+# Sub-build parallelism -------------------------------------------------------
+# Each subproject is built by `cmake --build <dir>` with no -j (verified in
+# build/logs/*_build.log: the EXEC line is plain `cmake --build <dir>`), so
+# every concurrently running subproject spawns its own full-machine job set.
+# Measured 2026-11-25 22:40: rccl + composable_kernel + hipBLASLt + rocFFT were
+# running together -> 247 clang processes on 80 cores, load 160, 0% idle, while
+# composable_kernel only finished 1.3 of 1015 edges per minute. `cmake --build`
+# honours CMAKE_BUILD_PARALLEL_LEVEL from the environment, so one shared value
+# keeps the SUM of sub-builds near the core count (and bounds memory as well).
+# Override with THEROCK_SUBPROJECT_JOBS=<n>; 0 leaves the old behaviour.
+if [ "${THEROCK_SUBPROJECT_JOBS:-24}" != 0 ]; then
+  export CMAKE_BUILD_PARALLEL_LEVEL="${THEROCK_SUBPROJECT_JOBS:-24}"
+  log "sub-build parallelism: CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL (sum over subprojects; THEROCK_SUBPROJECT_JOBS=$THEROCK_SUBPROJECT_JOBS)"
+fi
+
 # Progress heartbeat ---------------------------------------------------------
 # The top-level ninja advances once per whole subproject, so hours can pass
 # without a new line in build.log (2026-11-25: hipBLASLt Tensile launched 50198
