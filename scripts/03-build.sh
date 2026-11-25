@@ -223,6 +223,31 @@ if [ "$DRY_RUN" != 1 ]; then
 fi
 
 log "compiling (parallel=$JOBS)... log: $LOG_DIR/build.log"
+# Progress heartbeat ---------------------------------------------------------
+# The top-level ninja advances once per whole subproject, so hours can pass
+# without a new line in build.log (2026-11-25: hipBLASLt Tensile launched 50198
+# assembly tasks and printed nothing for ~2 h, which looked like a hang). Append
+# one line every 5 min with each subproject's own edge counter plus memory/load,
+# so "slow" can be told apart from "dead".
+if [ "$DRY_RUN" != 1 ]; then
+  (
+    while :; do
+      sleep 300
+      line="$(date +%H:%M:%S) heartbeat"
+      for f in "$THEROCK_BUILD"/logs/*_build.log; do
+        [ -f "$f" ] || continue
+        p="$(grep -aoE '\[[0-9]+/[0-9]+\]' "$f" | tail -1)"
+        [ -n "$p" ] && line="$line $(basename "$f" _build.log)=$p"
+      done
+      line="$line mem=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "%dG/%dG",(t-a)/1048576,t/1048576}' /proc/meminfo)"
+      line="$line load=$(cut -d' ' -f1 /proc/loadavg)"
+      printf '%s\n' "$line" >> "$LOG_DIR/build.heartbeat.log"
+    done
+  ) &
+  HB_PID=$!
+  trap 'kill "$HB_PID" 2>/dev/null || true' EXIT
+fi
+
 if [ "$DRY_RUN" = 1 ]; then
   printf '  [dry-run] cmake --build %s -j %s\n' "$THEROCK_BUILD" "$JOBS"
 else

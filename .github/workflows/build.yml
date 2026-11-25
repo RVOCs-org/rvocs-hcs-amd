@@ -97,7 +97,7 @@ jobs:
   build:
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
     runs-on: [self-hosted, linux, riscv64]
-    timeout-minutes: 200
+    timeout-minutes: 600
     steps:
       - name: Sync source tree (no checkout action)
         run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
@@ -115,7 +115,7 @@ jobs:
         run: cd "$RVOCS_ROOT" && bash ci/stage.sh preflight
 
       - name: Build TheRock (gfx1201 only)
-        run: cd "$RVOCS_ROOT" && bash ci/stage.sh build ${{ inputs.force && '--force' || '' }} --timeout 10800
+        run: cd "$RVOCS_ROOT" && bash ci/stage.sh build ${{ inputs.force && '--force' || '' }} --timeout 36000
 
       - name: Archive logs to shared storage
         if: always()
@@ -125,6 +125,13 @@ jobs:
           for f in "$RVOCS_ROOT"/work/logs/ci-*.log "$RVOCS_ROOT"/work/ci-summary.json; do
             [ -e "$f" ] && cp -a "$f" "$OUT"/ || true
           done
+          # TheRock keeps the real per-subproject logs (Tensile assembly, CK
+          # instance builds, lld) under build/logs; without them a failed run is
+          # impossible to post-mortem once runner-worker is cleaned up.
+          if [ -d "$RVOCS_ROOT/upstream/therock/build/logs" ]; then
+            mkdir -p "$OUT/therock-logs"
+            cp -a "$RVOCS_ROOT"/upstream/therock/build/logs/*_build.log "$OUT/therock-logs"/ 2>/dev/null || true
+          fi
           echo "artifacts=$OUT"
           ls -l "$OUT" 2>/dev/null | head -20 || true
 
@@ -132,7 +139,7 @@ jobs:
   wheels:
     needs: build
     runs-on: [self-hosted, linux, riscv64]
-    timeout-minutes: 240
+    timeout-minutes: 480
     steps:
       - name: Sync source tree (no checkout action)
         run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
