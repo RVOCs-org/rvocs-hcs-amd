@@ -1,7 +1,7 @@
 # RISC-V (riscv64) 构建说明
 
 本页只讲 riscv64 与 x86_64 不同的地方。通用阶段见 [BUILD.md](BUILD.md)，补丁机制见 [PATCHES.md](PATCHES.md)，
-部署与调参见 [VLLM.md](VLLM.md)。
+部署、serve 与压测见 [DEPLOY_THEROCK.md](DEPLOY_THEROCK.md)。
 
 ## 1. 为什么只能源码构建
 
@@ -63,8 +63,8 @@ GPU_RUN=1 ./scripts/build.sh --stage verify
 | 阶段 | 耗时 | 产物 |
 | --- | --- | --- |
 | S1 TheRock（ml 组件集） | 17h31m（12 次增量续跑，零重编） | `dist/rocm` 8.5 GB |
-| S2 四个 wheel + venv | ~5h | triton 262 MB / torch 329 MB / torchvision 1.2 MB / vllm 42 MB |
-| S3 镜像 | 49 min | 17.4 GB |
+| S2 四个 wheel + venv | ~5h | triton 250 MB / torch 146 MB / torchvision 0.98 MB / vllm 41 MB（v0.2.2，vLLM 0.29.1） |
+| S3 镜像 | 16–50 min（缓存/冷启动） | 16.2 GB（docker images，v0.2.2） |
 | S4 压测（可选） | 5.5h | 最优 740 tok/s @ max-num-seqs=96 |
 
 ## 4. 构建产物与镜像布局
@@ -137,7 +137,7 @@ GPU_RUN=1 ./scripts/build.sh --stage verify
 
 ## 8. 部署注意
 
-- 多卡：`--tensor-parallel-size 2` 通常要配 `--enforce-eager`（RDNA4 上 graph 捕获 + RCCL 易异常）。
+- 多卡：`--tensor-parallel-size 2` 需先加载 `/opt/stack/rccl_fix.env`，并保证 RCCL 与 ROCm 同源。
 - `--max-num-seqs` 取 2 的幂，工程推荐 64，上限 96。
 - 首次启动 `torch.compile` 需 4–5 分钟，按 `max-num-seqs` 缓存。
 - 多卡兼容默认值（`NCCL_CUMEM_ENABLE=1`、`NCCL_WIN_ENABLE=0`）在 riscv64 构建时自动写入

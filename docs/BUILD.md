@@ -146,7 +146,7 @@ THEROCK_EXTRA_ARGS="-DTHEROCK_ENABLE_RCCL=ON -DTHEROCK_BUNDLE_3RDPARTY=OFF" \
 | fetch | 2–10 min | 20–40 min | 30–60 min + 框架源码 |
 | build | — | 1.5–4 h | ~17 h（ml 组件集） |
 | wheels | 2–5 min（下载） | 1–3 h | ~5 h（4 个 wheel） |
-| image | 1–3 min | 1–3 min | ~50 min（镜像 17 GB） |
+| image | 1–3 min | 1–3 min | 16–50 min（缓存/冷启动；v0.2.2 为 16.2 GB） |
 | verify | <1 min | <1 min | <1 min |
 
 内存：`amd-llvm` 链接每 job 4–8 GB；torch/vLLM 编译建议 `MAX_JOBS` 与内存匹配（80 核/121 GB 用 32）。
@@ -176,4 +176,4 @@ THEROCK_EXTRA_ARGS="-DTHEROCK_ENABLE_RCCL=ON -DTHEROCK_BUNDLE_3RDPARTY=OFF" \
 | 镜像里 `import vllm` 失败 | venv 搬入不完整 / shebang 未改 | 看 `--stage verify` 输出；确认 `HOST_VENV_PREFIX` |
 | prebuilt 404 | 版本号或 bundle 名不对 | 浏览 `https://stable.repo.amd.com/rocm/core/tarball/` |
 
-部署侧问题（多卡挂起、参数不识别等）见 [VLLM.md](VLLM.md) §5。
+部署侧问题（多卡挂起、参数不识别等）见 [DEPLOY_THEROCK.md](DEPLOY_THEROCK.md) §6。
