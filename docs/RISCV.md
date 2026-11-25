@@ -34,7 +34,7 @@ pip3 install --user --break-system-packages meson==1.12.0 joblib simplejson yapp
    ```
 3. **CppHeaderParser**（hip-clr 的 PCH 生成）与 **msgpack/zstandard**（kpack 拆包）是构建期 Python 依赖。
 4. **磁盘与内存**：源码约 30 GB、构建树 200 GB 级；`amd-llvm` 链接每 job 4–8 GB。
-   80 核/121 GB 机器建议先 `--jobs 40`，内存吃紧降到 8–16。
+   80 核/121 GB 机器实测 `--jobs 32`（默认值按内存 GB/4 封顶，约 30），内存吃紧降到 8–16。
 
 ## 3. 一键构建
 
