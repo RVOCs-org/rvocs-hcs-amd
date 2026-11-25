@@ -235,7 +235,7 @@ log "compiling (parallel=$JOBS)... log: $LOG_DIR/build.log"
 # Override with THEROCK_SUBPROJECT_JOBS=<n>; 0 leaves the old behaviour.
 if [ "${THEROCK_SUBPROJECT_JOBS:-24}" != 0 ]; then
   export CMAKE_BUILD_PARALLEL_LEVEL="${THEROCK_SUBPROJECT_JOBS:-24}"
-  log "sub-build parallelism: CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL (sum over subprojects; THEROCK_SUBPROJECT_JOBS=$THEROCK_SUBPROJECT_JOBS)"
+  log "sub-build parallelism: CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL (sum over subprojects; THEROCK_SUBPROJECT_JOBS=${THEROCK_SUBPROJECT_JOBS:-24})"
 fi
 
 # Progress heartbeat ---------------------------------------------------------
