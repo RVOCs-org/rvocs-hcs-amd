@@ -232,10 +232,13 @@ log "compiling (parallel=$JOBS)... log: $LOG_DIR/build.log"
 # composable_kernel only finished 1.3 of 1015 edges per minute. `cmake --build`
 # honours CMAKE_BUILD_PARALLEL_LEVEL from the environment, so one shared value
 # keeps the SUM of sub-builds near the core count (and bounds memory as well).
-# Override with THEROCK_SUBPROJECT_JOBS=<n>; 0 leaves the old behaviour.
-if [ "${THEROCK_SUBPROJECT_JOBS:-24}" != 0 ]; then
-  export CMAKE_BUILD_PARALLEL_LEVEL="${THEROCK_SUBPROJECT_JOBS:-24}"
-  log "sub-build parallelism: CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL (sum over subprojects; THEROCK_SUBPROJECT_JOBS=${THEROCK_SUBPROJECT_JOBS:-24})"
+# Default 0 = no cap (each sub-build uses the whole machine). Measured on
+# 2026-11-25: capping at 24 made composable_kernel 3x slower (0.4 vs 1.3
+# completed objects per minute), because its instance TUs are pure CPU work
+# and there is no memory win. Set THEROCK_SUBPROJECT_JOBS=<n> to cap again.
+if [ "${THEROCK_SUBPROJECT_JOBS:-0}" != 0 ]; then
+  export CMAKE_BUILD_PARALLEL_LEVEL="${THEROCK_SUBPROJECT_JOBS:-0}"
+  log "sub-build parallelism: CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL (sum over subprojects; THEROCK_SUBPROJECT_JOBS=${THEROCK_SUBPROJECT_JOBS:-0})"
 fi
 
 # Progress heartbeat ---------------------------------------------------------
