@@ -182,6 +182,21 @@ fi
 # ---------------------------------------------------------------------------
 # build
 # ---------------------------------------------------------------------------
+# Memory-aware clamp. Measured 2026-11-25 on this host: one cc1plus compiling
+# LLVM/flang objects peaks at ~2.7 GB RSS; with -j64 that is >170 GB and the
+# kernel OOM-killed compilers at 17:27, which wedged the whole box (sshd could
+# not fork, the CI job lost its runner). Budget 80% of MemAvailable at 3 GB per
+# concurrent compiler so the build degrades in speed instead of dying.
+if [ "$DRY_RUN" != 1 ]; then
+  mem_gb=$(awk '/MemAvailable/{printf "%d",$2/1024/1024}' /proc/meminfo)
+  safe_jobs=$(( mem_gb * 80 / 100 / 3 ))
+  [ "$safe_jobs" -lt 4 ] && safe_jobs=4
+  if [ "$JOBS" -gt "$safe_jobs" ]; then
+    log "clamp parallel $JOBS -> $safe_jobs (MemAvailable ${mem_gb}G, ~3G per compiler)"
+    JOBS=$safe_jobs
+  fi
+fi
+
 log "compiling (parallel=$JOBS)... log: $LOG_DIR/build.log"
 if [ "$DRY_RUN" = 1 ]; then
   printf '  [dry-run] cmake --build %s -j %s\n' "$THEROCK_BUILD" "$JOBS"

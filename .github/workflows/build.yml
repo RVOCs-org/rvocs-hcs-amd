@@ -46,7 +46,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  INNER_JOBS: "64"
+  INNER_JOBS: "48"   # upper bound; scripts/03-build.sh clamps by MemAvailable
   CCACHE_DIR: /home/ubuntu/.ccache
   GIT_TERMINAL_PROMPT: "0"
   # 允许仓库变量覆盖，便于换宿主/换目录；未设置时用本机已验证路径
