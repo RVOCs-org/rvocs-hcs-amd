@@ -132,6 +132,28 @@ command -v meson >/dev/null 2>&1 || warn "meson not found on PATH (needed when T
 log "build python: $SYSTEM_PYTHON (system interpreter, not the venv)"
 
 # ---------------------------------------------------------------------------
+# gfx1201-only: pin subproject DEFAULT_GPUS
+# ---------------------------------------------------------------------------
+# THEROCK_AMDGPU_TARGETS only reaches subprojects that honour it. hipBLASLt
+# derives its architecture list from DEFAULT_GPUS, which comes from the
+# gfx120X-all family in cmake/therock_amdgpu_targets.cmake. Measured 2026-11-25:
+# a CI run configured hipBLASLt with "gfx1200;gfx1201" and regenerated the whole
+# Tensile device library for both arches. Drop gfx1200 from that family so
+# DEFAULT_GPUS has exactly one member; that changes a cache input, so force a
+# reconfigure. Idempotent, and only active when the target is gfx1201.
+if [ "${GPU_TARGET:-}" = gfx1201 ] && [ "${THEROCK_PIN_AMDGPU_TARGET:-1}" = 1 ]; then
+  pin_out="$("$SCRIPT_DIR/tools/gfx1201-only.sh" "$SRC_TREE/cmake/therock_amdgpu_targets.cmake" 2>&1)" || {
+    warn "gfx1201-only: could not patch therock_amdgpu_targets.cmake; hipBLASLt may build gfx1200 too"
+    pin_out=""
+  }
+  [ -n "$pin_out" ] && printf '%s
+' "$pin_out" | sed 's/^/  /'
+  case "$pin_out" in
+    *CHANGED=1*) RECONFIGURE=1; log "gfx1201-only: family list changed -> forcing RECONFIGURE=1" ;;
+  esac
+fi
+
+# ---------------------------------------------------------------------------
 # configure
 # ---------------------------------------------------------------------------
 CACHE="$THEROCK_BUILD/CMakeCache.txt"

@@ -93,11 +93,15 @@ mkdir -p "$STATE" "$LOGD" "$ALERT_DIR"
 # ---------------------------------------------------------------- identity --
 # A marker is valid only for the exact input set that produced it.
 _key() {
-  local head tree self
-  head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo nogit)"
+  local pin tree self
+  # Deliberately NOT keyed on this repo's HEAD: .github/ and ci/ edits do not
+  # change build inputs, and keying on HEAD re-entered the 4-6 h chain for pure
+  # CI changes (measured 2026-11-25). The upstream pin plus the patches/docker/
+  # scripts tree hash capture what actually affects the build.
+  pin="$(git -C "$ROOT/upstream/therock" rev-parse HEAD 2>/dev/null || echo nopin)"
   tree="$(cd "$ROOT" && { find patches docker scripts -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null || true; } | sha256sum | cut -c1-16)"
   self="$(sha256sum "$0" | cut -c1-16)"
-  printf '%s' "${head}-${ARCH}-${GPU}-${KIND}-${WHEEL_MODE}-${tree}-${self}" | sha256sum | cut -c1-16
+  printf '%s' "${pin}-${ARCH}-${GPU}-${KIND}-${WHEEL_MODE}-${tree}-${self}" | sha256sum | cut -c1-16
 }
 KEY="$(_key)"
 HEAD_SHORT="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo nogit)"
