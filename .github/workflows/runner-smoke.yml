@@ -1,0 +1,104 @@
+name: runner-smoke
+
+# P0 冒烟：只验证 self-hosted riscv64 runner 与 GitHub 侧 action 运行时是否可用。
+# 不碰构建产物、不推镜像、不需要任何 secret。
+# 触发：推送到任意 ci/** 分支，或手动 dispatch。
+
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, linux, riscv64, amd-gpu]
+    timeout-minutes: 10
+    steps:
+      - name: Runner identity
+        run: |
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_os=${RUNNER_OS:-unknown} arch=${RUNNER_ARCH:-unknown}"
+          env | grep -E '^RUNNER_(NAME|OS|ARCH|WORKSPACE|TRACKING_ID)=' | sort
+
+      - name: Host facts
+        run: |
+          uname -a
+          echo "nproc=$(nproc)"
+          free -g | head -2
+          df -h / | tail -1
+          echo "kernel=$(uname -r)"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout proof (Node action on riscv64)
+        run: |
+          echo "head=$(git rev-parse --short HEAD)"
+          echo "tracked_files=$(git ls-files | wc -l)"
+          ls -1 | head -10
+
+      - name: Docker (passwordless, no sudo)
+        run: |
+          docker version --format 'server={{.Server.Version}}'
+          echo "images=$(docker images -q | wc -l)"
+          docker images --format '{{.Repository}}:{{.Tag}}' | head -5
+
+      - name: GPU and device nodes
+        run: |
+          ls -l /dev/kfd 2>&1 || echo "MISSING /dev/kfd"
+          ls -1 /dev/dri 2>&1 || echo "MISSING /dev/dri"
+          if command -v amd-smi >/dev/null; then amd-smi list 2>&1 | head -15; else echo "amd-smi: not on host"; fi
+          if command -v rocm-smi >/dev/null; then rocm-smi --showid 2>&1 | head -10; else echo "rocm-smi: not on host"; fi
+
+      - name: Toolchain and CLI
+        run: |
+          for c in gcc clang cmake ninja python3 flock jq gh git tar; do
+            printf '%-8s %s\n' "$c" "$(command -v "$c" || echo MISSING)"
+          done
+          python3 -V
+
+      - name: CI locks writable
+        run: |
+          exec 9>/var/lock/rvocs-ci.lock && echo "ci_lock=OK"
+          exec 8>/var/lock/rvocs-gpu.lock && echo "gpu_lock=OK"
+
+      - name: Create evidence file
+        run: |
+          mkdir -p /tmp/smoke
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "runner=${RUNNER_NAME}"
+            uname -a
+            nproc
+            docker version --format 'server={{.Server.Version}}'
+          } > /tmp/smoke/evidence.txt
+          cat /tmp/smoke/evidence.txt
+
+      - name: Upload artifact (Node action on riscv64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ github.run_id }}
+          path: /tmp/smoke/evidence.txt
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### runner-smoke"
+            echo "- runner: \`${RUNNER_NAME}\`"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
