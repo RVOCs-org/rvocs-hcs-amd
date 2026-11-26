@@ -241,6 +241,15 @@ if [ "${THEROCK_SUBPROJECT_JOBS:-0}" != 0 ]; then
   log "sub-build parallelism: CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL (sum over subprojects; THEROCK_SUBPROJECT_JOBS=${THEROCK_SUBPROJECT_JOBS:-0})"
 fi
 
+# rocisa nanobind stable-ABI workaround (riscv64 / Python 3.14) ---------------
+# _rocisa.abi3.so (AMD clang 23) segfaults in __dynamic_cast during TensileLite
+# kernel generation (2026-11-26, reproducible twice, 10-15G RSS -> not memory).
+# Rebuilding without the stable ABI is verified; the helper is idempotent.
+if [ "" != 1 ]; then
+  bash "$SCRIPT_DIR/tools/patch-rocisa-noabi3.sh" "$SCRIPT_DIR/.." || {
+    log "ERROR: rocisa stable-ABI workaround failed"; exit 1; }
+fi
+
 # Progress heartbeat ---------------------------------------------------------
 # The top-level ninja advances once per whole subproject, so hours can pass
 # without a new line in build.log (2026-11-25: hipBLASLt Tensile launched 50198
