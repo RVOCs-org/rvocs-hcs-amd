@@ -61,6 +61,15 @@ _stage_paths() { # _stage_paths <stage> -> space separated paths (repo-relative)
   esac
 }
 
+# Per-component wheel fingerprint: the shared inputs plus THAT component's build
+# script only, so editing scripts/wheels/triton.sh cannot force a torch rebuild.
+wheel_fp() { # wheel_fp <repo-root> <component> [therock-tree]
+  local root="$1" comp="$2" tr="${3:-$1/upstream/therock}"
+  printf '%s-%s-%s' "$(upstream_fp "$tr")" \
+    "$(_hash_paths "$root" patches config scripts/build.sh scripts/04-wheels.sh scripts/lib "scripts/wheels/$comp.sh")" \
+    "$comp" | _ihash
+}
+
 stage_fp() { # stage_fp <repo-root> <stage> [therock-tree]
   local root="$1" stage="$2" tr="${3:-$1/upstream/therock}" paths
   paths="$(_stage_paths "$stage")"

@@ -91,7 +91,7 @@ build_one() { # build_one <stage>
   # before RCCL landed), while an mtime/pin based check rebuilt 2 hours for a
   # no-op. The stamp records a content fingerprint instead (ci/lib/inputs.sh).
   local fp stampf stampd="$WHEELHOUSE/.stamps"
-  fp="$(printf '%s-%s' "$(stage_fp "$REPO_ROOT" wheels "$(rocm_tree)")" "$stage" | sha256sum | cut -c1-16)"
+  fp="$(wheel_fp "$REPO_ROOT" "$stage" "$(rocm_tree)")"
   stampf="$stampd/$stage.fp"
   mkdir -p "$stampd"
   if ls "$WHEELHOUSE"/${stage}-*.whl >/dev/null 2>&1 && [ "${FORCE_REBUILD:-0}" != 1 ]; then
