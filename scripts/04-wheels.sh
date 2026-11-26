@@ -12,6 +12,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+if [ -f "$SCRIPT_DIR/../ci/lib/inputs.sh" ]; then
+  # shellcheck source=../ci/lib/inputs.sh
+  source "$SCRIPT_DIR/../ci/lib/inputs.sh"
+fi
 
 if [ "$IMAGE_KIND" != vllm ]; then
   log "the runtime image needs no Python stack, skipping"
@@ -82,9 +86,26 @@ build_one() { # build_one <stage>
   [ -f "$script" ] || die "missing wheel build script: scripts/wheels/${stage}.sh"
   # Skip the build when the wheel already exists (a torch build takes 2 hours and
   # must not be repeated just because a later component failed)
+  # Reuse a wheel only when the content it was built from is unchanged. A bare
+  # "wheel file exists" check silently kept stale wheels (e.g. a torch built
+  # before RCCL landed), while an mtime/pin based check rebuilt 2 hours for a
+  # no-op. The stamp records a content fingerprint instead (ci/lib/inputs.sh).
+  local fp stampf stampd="$WHEELHOUSE/.stamps"
+  fp="$(printf '%s-%s' "$(stage_fp "$REPO_ROOT" wheels "$(rocm_tree)")" "$stage" | sha256sum | cut -c1-16)"
+  stampf="$stampd/$stage.fp"
+  mkdir -p "$stampd"
   if ls "$WHEELHOUSE"/${stage}-*.whl >/dev/null 2>&1 && [ "${FORCE_REBUILD:-0}" != 1 ]; then
-    log "---------- $stage wheel already present, skipping (FORCE_REBUILD=1 forces a rebuild) ----------"
-    return 0
+    if [ -f "$stampf" ] && [ "$(cat "$stampf")" = "$fp" ]; then
+      log "---------- $stage wheel up to date (inputs unchanged fp=$fp), skipping (FORCE_REBUILD=1 forces a rebuild) ----------"
+      return 0
+    fi
+    if [ -f "$stampf" ]; then
+      log "---------- $stage inputs changed (fp $(cat "$stampf") -> $fp), rebuilding ----------"
+    else
+      log "---------- $stage wheel present but no input stamp yet -> adopting it (fp=$fp) ----------"
+      printf '%s\n' "$fp" > "$stampf"
+      return 0
+    fi
   fi
 
   log "---------- building $stage ----------"
@@ -96,6 +117,7 @@ build_one() { # build_one <stage>
   WHEELHOUSE="$WHEELHOUSE" GPU_TARGET="$GPU_TARGET" ARCH="$ARCH" JOBS="$JOBS" \
     bash "$script" 2>&1 | tee -a "$LOG_DIR/wheels-${stage}.log"
   [ "${PIPESTATUS[0]}" = 0 ] || die "$stage build failed (see $LOG_DIR/wheels-${stage}.log)"
+  printf '%s\n' "$fp" > "$stampf"
 }
 
 # riscv64: libtorch_hip.so references the libMIOpen C API symbols, but the linker's

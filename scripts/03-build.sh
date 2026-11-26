@@ -29,6 +29,28 @@ fi
 # ---------------------------------------------------------------------------
 components_flags "$COMPONENTS" || die "unknown component set: $COMPONENTS"
 
+# ------------------------------------------------- content-addressed shortcut --
+# If the inputs are byte-identical to the last successful build and the dist
+# tree is still there, there is nothing to compile. Without this guard the stage
+# calls cmake/ninja anyway, and ninja is mtime based: re-checking out sources in
+# the fetch stage (or any touch) rebuilds hours of work with zero content change.
+FP=""
+STAMP="$THEROCK_BUILD/.rvocs-inputs"
+if [ -f "$SCRIPT_DIR/../ci/lib/inputs.sh" ]; then
+  # shellcheck source=../ci/lib/inputs.sh
+  source "$SCRIPT_DIR/../ci/lib/inputs.sh"
+  FP="$(stage_fp "$REPO_ROOT" build "$SRC_TREE")-${COMPONENTS}-${GPU_TARGET}-${THEROCK_EXTRA_ARGS:-}"
+fi
+if [ "${RVOCS_PRINT_FP:-0}" = 1 ]; then printf 'FP=%s\n' "$FP"; exit 0; fi
+if [ "$DRY_RUN" != 1 ] && [ -n "$FP" ] \
+   && [ "${FORCE_REBUILD:-0}" != 1 ] && [ "${RECONFIGURE:-0}" != 1 ] \
+   && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$FP" ] && [ -d "$DIST_DIR/lib" ]; then
+  log "inputs unchanged (fp=$FP) and dist present -> skipping configure+ninja (nothing to rebuild)"
+  ensure_dist_dev_artifacts
+  log "build done (cached)"
+  exit 0
+fi
+
 CMAKE_ARGS=(
   "-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
   "-DTHEROCK_AMDGPU_FAMILIES=$GPU_FAMILY"
@@ -297,4 +319,5 @@ if [ "$DRY_RUN" != 1 ]; then
 fi
 
 ensure_dist_dev_artifacts
+[ "$DRY_RUN" != 1 ] && [ -n "$FP" ] && printf '%s\n' "$FP" > "$STAMP"
 log "build done"

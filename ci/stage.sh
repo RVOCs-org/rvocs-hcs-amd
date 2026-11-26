@@ -5,8 +5,9 @@
 # Why this exists:
 #   scripts/build.sh knows HOW to build; it does not know about CI concerns
 #   (resume, locking, guards, logs, summaries, artifacts). This wrapper adds:
-#     1. resumability  - .stage_done/<stage>.<key> markers, key = git HEAD +
-#                        patches tree + wrapper itself; changed inputs => rebuild
+#     1. resumability  - .stage_done/<stage>.<key> markers; the key is a
+#                        content fingerprint of what THIS stage consumes
+#                        (ci/lib/inputs.sh), not HEAD/pin/mtime; changed => rebuild
 #     2. locking       - CI_CPU_LOCK serialises CPU stages (single 121G host),
 #                        CI_GPU_LOCK guarantees exclusive access to /dev/kfd
 #     3. guards        - refuse to start when disk/memory headroom is unsafe
@@ -91,17 +92,20 @@ WHEEL_MODE="${WHEEL_MODE:-source}"
 mkdir -p "$STATE" "$LOGD" "$ALERT_DIR"
 
 # ---------------------------------------------------------------- identity --
-# A marker is valid only for the exact input set that produced it.
+# A marker is valid only for the exact input set that produced it. The key is
+# content-addressed (ci/lib/inputs.sh): the file contents of the paths THIS stage
+# consumes, plus the upstream source tree and the build parameters. It is not
+# keyed on this repo's HEAD, on a bare upstream commit id, or on mtimes, so a
+# re-checkout, a `git submodule update`, or an edit to ANOTHER stage's scripts
+# cannot invalidate a finished build (2026-11-26: three manual marker migrations,
+# and every scripts/ edit put the 142-minute build back on the table).
+# shellcheck source=lib/inputs.sh
+source "$(dirname "$0")/lib/inputs.sh"
+
 _key() {
-  local pin tree self
-  # Deliberately NOT keyed on this repo's HEAD: .github/ and ci/ edits do not
-  # change build inputs, and keying on HEAD re-entered the 4-6 h chain for pure
-  # CI changes (measured 2026-11-25). The upstream pin plus the patches/docker/
-  # scripts tree hash capture what actually affects the build.
-  pin="$(git -C "$ROOT/upstream/therock" rev-parse HEAD 2>/dev/null || echo nopin)"
-  tree="$(cd "$ROOT" && { find patches docker scripts -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null || true; } | sha256sum | cut -c1-16)"
-  self="$(sha256sum "$0" | cut -c1-16)"
-  printf '%s' "${pin}-${ARCH}-${GPU}-${KIND}-${WHEEL_MODE}-${tree}-${self}" | sha256sum | cut -c1-16
+  local fp
+  fp="$(stage_fp "$ROOT" "$STAGE" "$ROOT/upstream/therock")"
+  printf '%s' "${fp}-${ARCH}-${GPU}-${KIND}-${WHEEL_MODE}" | sha256sum | cut -c1-16
 }
 KEY="$(_key)"
 HEAD_SHORT="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo nogit)"
