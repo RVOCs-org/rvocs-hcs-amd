@@ -91,7 +91,11 @@ build_one() { # build_one <stage>
   # before RCCL landed), while an mtime/pin based check rebuilt 2 hours for a
   # no-op. The stamp records a content fingerprint instead (ci/lib/inputs.sh).
   local fp stampf stampd="$WHEELHOUSE/.stamps"
-  fp="$(wheel_fp "$REPO_ROOT" "$stage" "$(rocm_tree)")"
+  # NOTE: the third argument must be the TheRock *source* work tree. It used to be
+  # "$(rocm_tree)" (the install prefix), which is not a git work tree, so
+  # upstream_fp degenerated to a constant and an upstream source change never
+  # invalidated the wheels (found 2026-11-26 while seeding stamps).
+  fp="$(wheel_fp "$REPO_ROOT" "$stage" "${SRC_TREE:-$REPO_ROOT/upstream/therock}")"
   stampf="$stampd/$stage.fp"
   mkdir -p "$stampd"
   if ls "$WHEELHOUSE"/${stage}-*.whl >/dev/null 2>&1 && [ "${FORCE_REBUILD:-0}" != 1 ]; then
