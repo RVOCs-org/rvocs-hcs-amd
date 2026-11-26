@@ -113,6 +113,27 @@ fix_torch_miopen_needed() {
   run patchelf --add-needed libMIOpen.so.1 "$so" || warn "patchelf failed (importing torch may report missing miopen symbols)"
 }
 
+# riscv64 / TheRock: this torch was built with USE_MIOPEN=0, but its generated
+# HIP code still calls the at::native::miopen_* wrappers, so importing torch
+# fails with
+#   ImportError: libtorch_hip.so: undefined symbol:
+#     _ZN2at6native28miopen_convolution_transposeERKNS_6TensorES3_...
+# The runtime image already solves this the same way (a 14 KB shim installed as
+# /opt/rocm/lib/libMIOpen.so.1, see docker/miopen-stub/). torch/lib/ is searched
+# before the ROCm lib dirs (libtorch_hip.so carries a DT_NEEDED entry for
+# libMIOpen.so.1), so dropping the shim there makes the host-side import check
+# resolve exactly like the image does. Text models served by vLLM never call the
+# MIOpen convolution/batch-norm entry points.
+install_miopen_stub() {
+  local src="$SCRIPT_DIR/../docker/miopen-stub/libMIOpen.so.1" dst
+  [ -f "$src" ] || { warn "MIOpen shim missing: $src (importing torch will fail)"; return 0; }
+  dst=$(ls -d "$VENV_STACK"/lib/python3*/site-packages/torch/lib 2>/dev/null | head -1 || true)
+  [ -n "$dst" ] || { warn "torch/lib not found under $VENV_STACK"; return 0; }
+  cmp -s "$src" "$dst/libMIOpen.so.1" && return 0
+  log "installing MIOpen shim -> $dst/libMIOpen.so.1 (torch built with USE_MIOPEN=0)"
+  run cp -f "$src" "$dst/libMIOpen.so.1"
+}
+
 install_wheel() { # install_wheel <name-glob>
   local n="$1"
   # --force-reinstall: with the same name and version pip would skip the install
@@ -153,6 +174,7 @@ wheels_source() {
   build_one torch
   install_wheel torch
   fix_torch_miopen_needed
+  install_miopen_stub
   check_torch_nccl
   log "torch: $("$PY" -c 'import torch;print(torch.__version__)' 2>/dev/null || echo 'pending check')"
 
