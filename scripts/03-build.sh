@@ -245,7 +245,7 @@ fi
 # _rocisa.abi3.so (AMD clang 23) segfaults in __dynamic_cast during TensileLite
 # kernel generation (2026-11-26, reproducible twice, 10-15G RSS -> not memory).
 # Rebuilding without the stable ABI is verified; the helper is idempotent.
-if [ "" != 1 ]; then
+if [ "${DRY_RUN:-0}" != 1 ]; then
   bash "$SCRIPT_DIR/tools/patch-rocisa-noabi3.sh" "$SCRIPT_DIR/.." || {
     log "ERROR: rocisa stable-ABI workaround failed"; exit 1; }
 fi
