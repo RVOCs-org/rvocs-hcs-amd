@@ -125,13 +125,23 @@ fix_torch_miopen_needed() {
 # resolve exactly like the image does. Text models served by vLLM never call the
 # MIOpen convolution/batch-norm entry points.
 install_miopen_stub() {
-  local src="$SCRIPT_DIR/../docker/miopen-stub/libMIOpen.so.1" dst
+  local src="$SCRIPT_DIR/../docker/miopen-stub/libMIOpen.so.1" dst rt
   [ -f "$src" ] || { warn "MIOpen shim missing: $src (importing torch will fail)"; return 0; }
+  # torch/lib (searched via $ORIGIN) and dist/rocm/lib (LD_LIBRARY_PATH, and the
+  # layout the image ships) both need the shim: the real 473 MB MIOpen does not
+  # export the at::native::miopen_* wrappers, and whenever it is found first the
+  # import fails with "undefined symbol ...miopen_convolution_transpose".
   dst=$(ls -d "$VENV_STACK"/lib/python3*/site-packages/torch/lib 2>/dev/null | head -1 || true)
-  [ -n "$dst" ] || { warn "torch/lib not found under $VENV_STACK"; return 0; }
-  cmp -s "$src" "$dst/libMIOpen.so.1" && return 0
-  log "installing MIOpen shim -> $dst/libMIOpen.so.1 (torch built with USE_MIOPEN=0)"
-  run cp -f "$src" "$dst/libMIOpen.so.1"
+  if [ -n "$dst" ] && ! cmp -s "$src" "$dst/libMIOpen.so.1"; then
+    log "installing MIOpen shim -> $dst/libMIOpen.so.1 (torch built with USE_MIOPEN=0)"
+    run cp -f "$src" "$dst/libMIOpen.so.1"
+  fi
+  rt="$(rocm_tree)"
+  if [ -f "$rt/lib/libMIOpen.so.1.0" ] && ! cmp -s "$src" "$rt/lib/libMIOpen.so.1.0"; then
+    log "installing MIOpen shim -> $rt/lib/libMIOpen.so.1.0 (matches the image layout)"
+    run cp -f "$src" "$rt/lib/libMIOpen.so.1.0"
+  fi
+  return 0
 }
 
 install_wheel() { # install_wheel <name-glob>
