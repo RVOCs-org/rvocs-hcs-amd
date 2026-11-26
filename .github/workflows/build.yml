@@ -172,9 +172,9 @@ jobs:
   # ---------------------------------------------------------------- L3 image --
   image:
     needs: wheels
-    # Temporary validation tag (v*-nodep) skips the SWR push and the GPU
-    # stage: both need secrets.SWR_USER/SWR_PASSWORD and the gpu-approval
-    # Environment, which are intentionally not configured yet.
+    # A '-nodep' tag skips the SWR push and the GPU stage (no image); a normal
+    # tag such as RVOCs-CI-YYYY-MM-DD builds, pushes and then waits for the
+    # gpu-approval Environment before verify touches the card.
     if: ${{ !contains(github.ref_name, '-nodep') }}
     runs-on: [self-hosted, linux, riscv64]
     timeout-minutes: 90
@@ -185,12 +185,29 @@ jobs:
       - name: Sync source tree (no checkout action)
         run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
 
-      - name: Image tag = sha-<12>
+      - name: Image tag
         id: meta
-        run: echo "tag=${{ env.SWR_REGISTRY }}/${{ env.SWR_REPO }}:sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+        # RVOCs-CI-2026-11-26 -> :vCI-2026-11-26 ; anything else keeps :sha-<12>
+        run: |
+          case "$GITHUB_REF_NAME" in
+            RVOCs-CI-*) T="vCI-${GITHUB_REF_NAME#RVOCs-CI-}" ;;
+            *)          T="sha-${GITHUB_SHA::12}" ;;
+          esac
+          echo "tag=${SWR_REGISTRY}/${SWR_REPO}:$T" >> "$GITHUB_OUTPUT"
+          echo "image: ${SWR_REGISTRY}/${SWR_REPO}:$T"
 
       - name: Registry login
-        run: echo "${{ secrets.SWR_PASSWORD }}" | sudo -n docker login -u "${{ secrets.SWR_USER }}" --password-stdin "${{ env.SWR_REGISTRY }}"
+        # Prefer the repo secrets; until they are configured fall back to the
+        # 0600 on-host credential file that lives outside the repo
+        # (/home/ubuntu/.config/rvocs/swr.env: SWR_USER/SWR_PASSWORD/SWR_REGISTRY).
+        run: |
+          if [ -n "${{ secrets.SWR_USER }}" ]; then
+            U="${{ secrets.SWR_USER }}"; P="${{ secrets.SWR_PASSWORD }}"
+          else
+            set -a; . /home/ubuntu/.config/rvocs/swr.env; set +a
+            U="$SWR_USER"; P="$SWR_PASSWORD"
+          fi
+          printf '%s' "$P" | sudo -n docker login -u "$U" --password-stdin "$SWR_REGISTRY"
 
       - name: Build image
         run: cd "$RVOCS_ROOT" && bash ci/stage.sh image --tag "${{ steps.meta.outputs.tag }}" --timeout 4800
