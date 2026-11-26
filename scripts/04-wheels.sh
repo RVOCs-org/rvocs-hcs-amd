@@ -312,6 +312,13 @@ esac
 # Verification
 if [ "$DRY_RUN" != 1 ]; then
   log "verifying imports ..."
+  # Re-apply the two torch fix-ups immediately before verification: a later pip
+  # step (vLLM dependency resolution) can force-reinstall torch and silently drop
+  # both the libMIOpen DT_NEEDED entry and the shim, which is exactly how the
+  # 2026-11-26 import failures happened after the earlier fixed-up install.
+  # Both helpers are idempotent.
+  fix_torch_miopen_needed
+  install_miopen_stub
   "$PY" - <<'PYEOF'
 import sys
 # Everything here is a hard requirement at serving time, so check it always.
