@@ -22,7 +22,7 @@
 | `--channel` | `stable/nightly/rc/bkc/dev` | `stable` | prebuilt 的发布通道 |
 | `--base-image` | 镜像名 | Ubuntu 按架构 | 基础镜像 |
 | `--proxy` | `cn/direct/auto` | `auto` | `cn` 走 gh-proxy + 清华 PyPI |
-| `--jobs` | 数字 | `nproc` | 并行度 |
+| `--jobs`（或环境变量 `JOBS`） | 数字 | `min(nproc, 内存 GB / 4)` | 唯一的并行度开关：外层 ninja、TheRock 嵌套构建（`CMAKE_BUILD_PARALLEL_LEVEL` 由脚本导出）、wheel 编译（`MAX_JOBS`）全部由此派生 |
 | `--workdir` | 目录 | `./work` | 日志/下载/src/venv/wheelhouse 存放处 |
 | `--image-tag` | 字符串 | `amd-therock/<kind>:<arch>-<gpu>-<ver>` | 镜像名 |
 | `--dry-run` | — | — | 只打印不执行 |
@@ -146,7 +146,7 @@ THEROCK_EXTRA_ARGS="-DTHEROCK_ENABLE_RCCL=ON -DTHEROCK_BUNDLE_3RDPARTY=OFF" \
 | fetch | 2–10 min | 20–40 min | 30–60 min + 框架源码 |
 | build | — | 1.5–4 h | ~17 h（ml 组件集） |
 | wheels | 2–5 min（下载） | 1–3 h | ~5 h（4 个 wheel） |
-| image | 1–3 min | 1–3 min | ~50 min（镜像 17 GB） |
+| image | 1–3 min | 1–3 min | 16–50 min（缓存/冷启动；v0.2.2 为 16.2 GB） |
 | verify | <1 min | <1 min | <1 min |
 
 内存：`amd-llvm` 链接每 job 4–8 GB；torch/vLLM 编译建议 `MAX_JOBS` 与内存匹配（80 核/121 GB 用 32）。
@@ -170,10 +170,10 @@ THEROCK_EXTRA_ARGS="-DTHEROCK_ENABLE_RCCL=ON -DTHEROCK_BUNDLE_3RDPARTY=OFF" \
 | kpack 拆分报 ELF/PHDR 错误 | patchelf 未打补丁 | 按 `preflight` 提示装 pinned patchelf |
 | `split_artifacts.py: No module named msgpack` | 缺 python 依赖 | `pip3 install --user msgpack zstandard` |
 | configure 报 family 与缓存不一致 | 已有 build 目录换 family | `baseline.sh clean --yes` |
-| ninja 被 OOM kill | 并行度过高 | 降 `--jobs` |
+| ninja 被 OOM kill | 并行度过高 | 降 `--jobs`（会同步传递到 TheRock 嵌套构建；80 核/121 GB 实测 `--jobs 32`） |
 | torch 编译找不到 ROCm | `ROCM_PATH`/`dist` 不对 | 确认 `--stage build` 产物存在，脚本会导出 `ROCM_PATH` |
 | `pip install vllm` 解析失败 | wheel 索引没有该版本 | 用 `--wheel-mode source` 或 `--wheelhouse` |
 | 镜像里 `import vllm` 失败 | venv 搬入不完整 / shebang 未改 | 看 `--stage verify` 输出；确认 `HOST_VENV_PREFIX` |
 | prebuilt 404 | 版本号或 bundle 名不对 | 浏览 `https://stable.repo.amd.com/rocm/core/tarball/` |
 
-部署侧问题（多卡挂起、参数不识别等）见 [VLLM.md](VLLM.md) §5。
+部署侧问题（多卡挂起、参数不识别等）见 [DEPLOY_THEROCK.md](DEPLOY_THEROCK.md) §6。

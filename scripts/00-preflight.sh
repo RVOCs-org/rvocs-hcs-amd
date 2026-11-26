@@ -11,7 +11,7 @@ bad()  { printf '  [FAIL] %s\n' "$*"; FAIL=1; }
 note() { printf '  [ -- ] %s\n' "$*"; }
 
 echo "== host =="
-ok "arch=$(uname -m)  target arch=$ARCH  jobs=$JOBS"
+ok "arch=$(uname -m)  target arch=$ARCH  jobs=$JOBS (nested builds: CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL)"
 [ "$(uname -m)" = "$ARCH" ] || note "target arch differs from host ($ARCH != $(uname -m)): only reasonable with cross/emulated builds"
 mem_total=$(awk '/^MemTotal/ {print int($2/1048576)}' /proc/meminfo 2>/dev/null || echo 0)
 if [ "$MODE" = source ]; then

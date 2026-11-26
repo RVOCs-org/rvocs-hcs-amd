@@ -27,7 +27,24 @@ source "$REPO_ROOT/scripts/lib/patch.sh"
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/work}"
 ARCH="${ARCH:-$(uname -m)}"
 GPU_ID="${GPU_ID:-$DEFAULT_GPU}"
-JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
+# Parallelism: JOBS (environment, or --jobs which is parsed before this file is
+# sourced) is the ONLY knob. Everything below derives from it:
+#   * the outer ninja:      cmake --build $THEROCK_BUILD -j $JOBS   (03-build.sh)
+#   * TheRock nested builds: every component is built through teatime.py ->
+#     `cmake --build <component>` WITHOUT -j, so the outer -j is not inherited and
+#     the nested ninja falls back to nproc (80 on the 80-core / 121 GB host ->
+#     cc1plus OOM-killed in flang/lib/Lower). cmake honours the environment
+#     variable CMAKE_BUILD_PARALLEL_LEVEL instead, hence the export below.
+#   * wheels:               MAX_JOBS in scripts/wheels/*.sh
+# Never set CMAKE_BUILD_PARALLEL_LEVEL by hand; set JOBS.
+default_jobs() { # min(nproc, MemTotal GB / 4): flang/clang units take 2-4 GB per cc1plus
+  local n mem
+  n=$(nproc 2>/dev/null || echo 4)
+  mem=$(awk '/^MemTotal:/ {printf "%d", $2/1048576}' /proc/meminfo 2>/dev/null || echo 0)
+  if [ "${mem:-0}" -gt 0 ] && [ "$((mem / 4))" -lt "$n" ]; then echo $((mem / 4)); else echo "$n"; fi
+}
+JOBS="${JOBS:-$(default_jobs)}"
+export CMAKE_BUILD_PARALLEL_LEVEL="$JOBS"
 PROXY_MODE="${PROXY_MODE:-auto}"     # cn | direct | auto
 PROXY="${PROXY:-}"                   # 1|0 after resolve_proxy
 DRY_RUN="${DRY_RUN:-0}"

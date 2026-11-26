@@ -19,7 +19,7 @@ riscv64 需要 ≥ `7.0.0-31-generic` 的内核（旧内核的 amdgpu 有缺陷�
 | `rvocs-vllm-therock<rocm>-<gpu>-<arch>:<version>` | ROCm + torch/torchvision/triton/vLLM + `vllm serve` 入口 | **默认产物**，`docker run` 即 OpenAI 兼容服务 |
 | `rvocs-runtime-therock<rocm>-<gpu>-<arch>:<version>` | 只有 ROCm 用户态 | 自带应用、不需要 Python 栈的场景 |
 
-示例：`rvocs-vllm-therock10.0-r9700-riscv64:v0.1.0`。
+示例：`rvocs-vllm-therock10.0-r9700-riscv64:v0.2.2`。
 `<arch>` 为 OCI 名（amd64 / arm64 / riscv64），`<version>` 来自仓库根的 `VERSION`。
 两种镜像都**只含用户态**：内核驱动与 `/dev/kfd`、`/dev/dri` 由宿主机提供。
 
@@ -53,7 +53,7 @@ git clone <this-repo> && cd rvocs-hcs-amd
 ./scripts/build.sh --gpu r9700
 ```
 
-镜像：`rvocs-vllm-therock10.0-r9700-amd64:v0.1.0`。
+镜像：`rvocs-vllm-therock10.0-r9700-amd64:<version>`（x86_64 路径；该架构镜像尚未发布）。
 
 ### B. riscv64：源码全栈
 
@@ -83,7 +83,7 @@ docker run -d --name vllm --network=host --ipc=host \
 
 也可用编排层统一部署：`../rvocs-main/rvocs.sh --target therock --arch riscv --deploy --yes`。
 
-详见 [docs/VLLM.md](docs/VLLM.md)（单卡/多卡、调参、压测、排障）。
+详见 [docs/DEPLOY_THEROCK.md](docs/DEPLOY_THEROCK.md)（启动、serve、bench、参数与排障）。
 
 ## 阶段与常用命令
 

@@ -34,7 +34,7 @@ on:
         default: true
   push:
     branches: ["ci/**"]      # only the `preflight` job runs for these pushes
-    tags: ["v*"]             # full pipeline
+    tags: ["v*", "RVOCs-*"]  # full pipeline (v*-nodep / RVOCs-*-nodep skip image+verify)
   schedule:
     - cron: "0 18 * * *"     # 02:00 Asia/Shanghai nightly full run
 

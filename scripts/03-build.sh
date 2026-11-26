@@ -203,6 +203,20 @@ fi
 # ---------------------------------------------------------------------------
 # configure
 # ---------------------------------------------------------------------------
+# Keep the build hermetic: a host ROCm install (e.g. /opt/rocm -> rocm7.1.1)
+# leaks into sub-projects through find_package(OpenMP) ->
+#   CMakeCache: OpenMP_DIR=/opt/rocm/lib/cmake/openmp
+#   compile:    -isystem /opt/rocm/lib/clang/20/include
+# That older clang resource dir shadows the in-tree clang's <stdint.h> wrapper
+# (same include guard, include_next chain breaks) and the device pass dies with
+# "unknown type name 'uint64_t'" in __clang_hip_math.h (rocWMMA samples, on any
+# machine that has a system ROCm). Hide host ROCm from find_* and scrub the
+# env vars; TheRock itself does the same for the amd-llvm sub-build.
+if [ -n "${THEROCK_IGNORE_HOST_ROCM:-1}" ]; then
+  export CMAKE_IGNORE_PREFIX_PATH="/opt/rocm${CMAKE_IGNORE_PREFIX_PATH:+;$CMAKE_IGNORE_PREFIX_PATH}"
+  unset ROCM_PATH ROCM_HOME ROCM_DIR HIP_PATH HIP_DIR 2>/dev/null || true
+fi
+
 CACHE="$THEROCK_BUILD/CMakeCache.txt"
 if [ -f "$CACHE" ]; then
   cached_family=$(sed -n 's/^THEROCK_AMDGPU_FAMILIES[^=]*=//p' "$CACHE" | head -1)
@@ -244,7 +258,17 @@ if [ "$DRY_RUN" != 1 ]; then
   fi
 fi
 
-log "compiling (parallel=$JOBS)... log: $LOG_DIR/build.log"
+# Nested sub-builds read CMAKE_BUILD_PARALLEL_LEVEL from the environment, not
+# from the outer -j, so keep them aligned with the clamped value (unless an
+# explicit sub-build cap is requested further down).
+if [ "${THEROCK_SUBPROJECT_JOBS:-0}" = 0 ]; then
+  export CMAKE_BUILD_PARALLEL_LEVEL="$JOBS"
+fi
+
+# The explicit -j only steers the outer ninja. TheRock's per-component builds
+# (teatime.py -> `cmake --build` without -j) take their parallelism from
+# CMAKE_BUILD_PARALLEL_LEVEL, exported from JOBS in lib/common.sh.
+log "compiling (parallel=$JOBS, nested=$CMAKE_BUILD_PARALLEL_LEVEL)... log: $LOG_DIR/build.log"
 # Sub-build parallelism -------------------------------------------------------
 # Each subproject is built by `cmake --build <dir>` with no -j (verified in
 # build/logs/*_build.log: the EXEC line is plain `cmake --build <dir>`), so
@@ -296,7 +320,6 @@ if [ "$DRY_RUN" != 1 ]; then
   HB_PID=$!
   trap 'kill "$HB_PID" 2>/dev/null || true' EXIT
 fi
-
 if [ "$DRY_RUN" = 1 ]; then
   printf '  [dry-run] cmake --build %s -j %s\n' "$THEROCK_BUILD" "$JOBS"
 else
