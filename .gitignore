@@ -15,3 +15,7 @@ __pycache__/
 # Editors
 .idea/
 .vscode/
+
+# manual backup copies left behind by scripts/tools/*.sh
+docker/*.bak*
+*.bak.[0-9]*
