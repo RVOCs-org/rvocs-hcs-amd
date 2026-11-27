@@ -218,6 +218,16 @@ jobs:
         id: push
         run: |
           T="${{ steps.meta.outputs.tag }}"
+          # A cache hit in the image stage leaves the local image under an older
+          # name, so the current daily tag may not exist yet -> retag before push.
+          if ! sudo -n docker image inspect "$T" >/dev/null 2>&1; then
+            SRC=$(sudo -n docker images --format '{{.Repository}}:{{.Tag}}' \
+                    | grep -F "rvocs-vllm-therock10.0-r9700-riscv64:" \
+                    | grep -v -F "$T" | head -1)
+            [ -n "$SRC" ] || { echo "no local image available to retag as $T"; exit 1; }
+            echo "retagging $SRC -> $T (image stage was a cache hit)"
+            sudo -n docker tag "$SRC" "$T"
+          fi
           sudo -n docker push "$T"
           D=$(sudo -n docker inspect --format '{{index .RepoDigests 0}}' "$T" 2>/dev/null)
           echo "digest=$D" >> "$GITHUB_OUTPUT"
