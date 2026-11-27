@@ -34,15 +34,19 @@ trap cleanup EXIT
 # The checkpoint is Qwen3_5ForConditionalGeneration (vision tower included).
 # Its startup profiling feeds a dummy image to ViT-SDPA, which asked for 256 GiB
 # and killed the engine. Cap the image budget; we only run text prompts.
-MM_ARGS=(--limit-mm-per-prompt image=1
-         --mm-processor-kwargs "{\"max_pixels\": 262144}")
-grep -q 'skip-mm-profiling' <<<"$(/opt/venv-torch/bin/vllm serve --help 2>&1 || true)" 2>/dev/null && true
-MM_ARGS+=(--skip-mm-profiling)
+# --limit-mm-per-prompt is parsed with json.loads, so it needs a JSON object.
+# --limit-mm-per-prompt is parsed with json.loads, so it needs a JSON object.
+# --skip-mm-profiling drops the ViT dummy pass (was asking for 256 GiB).
+# --enforce-eager skips torch.compile, which needs >10 min on riscv64.
+MM_ARGS=(--limit-mm-per-prompt '{"image":1}'
+         --mm-processor-kwargs '{"max_pixels":262144}'
+         --skip-mm-profiling --enforce-eager)
 say "== start vLLM ($IMAGE) model=$MN port=$PORT maxlen=$MAXLEN util=$GPU_UTIL mm=${MM_ARGS[*]}"
 cleanup
 docker run -d --name "$NAME" \
   --device=/dev/kfd --device=/dev/dri --ipc=host --security-opt seccomp=unconfined \
-  "${GID_ARGS[@]}" -e HF_HUB_OFFLINE=1 \
+  "${GID_ARGS[@]}" -e HF_HUB_OFFLINE=1 -e TZ="${TZ:-Asia/Shanghai}" \
+  -v /etc/localtime:/etc/localtime:ro \
   -v "$MODEL_DIR":/models/"$MN":ro -v /home/ubuntu/.cache/vllm:/root/.cache \
   -p 127.0.0.1:"$PORT":8000 \
   --entrypoint /opt/venv-torch/bin/vllm "$IMAGE" \
