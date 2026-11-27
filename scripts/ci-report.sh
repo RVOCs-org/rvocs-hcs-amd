@@ -51,6 +51,10 @@ import os,smtplib,sys,email.message,email.utils
 h=email.message.EmailMessage()
 h["Subject"]=os.environ.get("MAIL_SUBJECT","RVOCs CI report")
 h["From"]=os.environ["MAIL_FROM"]; h["To"]=os.environ["MAIL_TO"]
+h["Date"]=email.utils.formatdate(localtime=True)
+h["Message-ID"]=email.utils.make_msgid(domain="metastonecorp.com")
+h["Reply-To"]=os.environ.get("MAIL_REPLY_TO",os.environ.get("SMTP_USER",os.environ["MAIL_FROM"]))
+h["X-Mailer"]="rvocs-ci"
 h.set_content("CI report attached (HTML).")
 h.add_attachment(open(sys.argv[1],"rb").read(),maintype="text",subtype="html",filename=os.path.basename(sys.argv[1]))
 cls=smtplib.SMTP_SSL if os.environ.get("SMTP_SSL","1")=="1" else smtplib.SMTP
