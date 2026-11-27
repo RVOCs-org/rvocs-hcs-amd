@@ -10,9 +10,7 @@
 set -uo pipefail
 IMAGE="${1:?image tag}"
 MODEL_DIR="${MODEL_DIR:-${2:-/home/ubuntu/models/Qwen3.8-27B-AWQ-INT4}}"
-PORT="${PORT:-18080}"; MAXLEN="${MAXLEN:-4096}"; GPU_UTIL="${GPU_UTIL:-0.85}"
-SEQS="${SEQS:-8}"; BATCH="${BATCH:-2048}"
-ENFORCE_EAGER="${ENFORCE_EAGER:-1}"; VLLM_USE_V1="${VLLM_USE_V1:-0}"
+PORT="${PORT:-18080}"; MAXLEN="${MAXLEN:-8192}"; GPU_UTIL="${GPU_UTIL:-0.85}"
 START_TIMEOUT="${START_TIMEOUT:-600}"
 OUT_DIR="${OUT_DIR:-/home/ubuntu/RVOCs-CICD/rvocs-hcs-amd/artifacts/model-verify}"
 NAME=rvocs-model-verify
@@ -33,19 +31,24 @@ GID_ARGS=(); for d in /dev/kfd /dev/dri/renderD128; do [ -e "$d" ] && GID_ARGS+=
 cleanup(){ docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-EG=(); [ "$ENFORCE_EAGER" = 1 ] && EG=(--enforce-eager)
-say "== start vLLM ($IMAGE) model=$MN port=$PORT maxlen=$MAXLEN util=$GPU_UTIL seqs=$SEQS batch=$BATCH eager=$ENFORCE_EAGER v1=$VLLM_USE_V1"
+# The checkpoint is Qwen3_5ForConditionalGeneration (vision tower included).
+# Its startup profiling feeds a dummy image to ViT-SDPA, which asked for 256 GiB
+# and killed the engine. Cap the image budget; we only run text prompts.
+MM_ARGS=(--limit-mm-per-prompt image=1
+         --mm-processor-kwargs "{\"max_pixels\": 262144}")
+grep -q 'skip-mm-profiling' <<<"$(/opt/venv-torch/bin/vllm serve --help 2>&1 || true)" 2>/dev/null && true
+MM_ARGS+=(--skip-mm-profiling)
+say "== start vLLM ($IMAGE) model=$MN port=$PORT maxlen=$MAXLEN util=$GPU_UTIL mm=${MM_ARGS[*]}"
 cleanup
 docker run -d --name "$NAME" \
   --device=/dev/kfd --device=/dev/dri --ipc=host --security-opt seccomp=unconfined \
-  "${GID_ARGS[@]}" -e VLLM_USE_V1="$VLLM_USE_V1" -e HF_HUB_OFFLINE=1 \
+  "${GID_ARGS[@]}" -e HF_HUB_OFFLINE=1 \
   -v "$MODEL_DIR":/models/"$MN":ro -v /home/ubuntu/.cache/vllm:/root/.cache \
   -p 127.0.0.1:"$PORT":8000 \
   --entrypoint /opt/venv-torch/bin/vllm "$IMAGE" \
   serve /models/"$MN" --served-model-name m --port 8000 \
   --max-model-len "$MAXLEN" --gpu-memory-utilization "$GPU_UTIL" \
-  --max-num-seqs "$SEQS" --max-num-batched-tokens "$BATCH" \
-  --tensor-parallel-size 1 --trust-remote-code "${EG[@]}" >>"$LOG" 2>&1 \
+  --tensor-parallel-size 1 --trust-remote-code "${MM_ARGS[@]}" >>"$LOG" 2>&1 \
   || { say "[FAIL] docker run"; exit 1; }
 
 t0=$(date +%s)
