@@ -266,12 +266,14 @@ jobs:
       - name: GPU smoke (exclusive lock)
         run: |
           exec 9>/var/lock/rvocs-gpu.lock && flock -w 900 9
+          export RVOCS_LOCK_HELD=1
           cd "$RVOCS_ROOT" && bash ci/stage.sh verify --tag "${{ needs.image.outputs.tag }}" --timeout 3600
 
       - name: Benchmark regression (c=4)
         if: ${{ inputs.bench || github.event_name != 'workflow_dispatch' }}
         run: |
           exec 9>/var/lock/rvocs-gpu.lock && flock -w 900 9
+          export RVOCS_LOCK_HELD=1
           cd "$RVOCS_ROOT" && BENCH_IMAGE="${{ needs.image.outputs.tag }}" bash ci/quick-bench.sh 4
 
       - name: Archive evidence to shared storage

@@ -146,8 +146,13 @@ fi
 # ------------------------------------------------------------------ locking --
 LOCK_FD_PATH="$CPU_LOCK"
 [ "$STAGE" = "verify" ] && LOCK_FD_PATH="$GPU_LOCK"
-exec 9>"$LOCK_FD_PATH" 2>/dev/null || die "cannot open lock file $LOCK_FD_PATH (need sudo once: touch + chown)"
-if ! flock -w 3600 9; then die "lock timeout: another $STAGE holds $LOCK_FD_PATH"; fi
+# The caller may already hold this lock (the workflow takes /var/lock/rvocs-gpu.lock
+# around the whole GPU step). Taking it twice in the same process tree deadlocks:
+#   flock -w 3600 hangs until timeout (observed 2026-11-27, 58 min wasted).
+if [ "${RVOCS_LOCK_HELD:-0}" != 1 ]; then
+  exec 9>"$LOCK_FD_PATH" 2>/dev/null || die "cannot open lock file $LOCK_FD_PATH (need sudo once: touch + chown)"
+  if ! flock -w 3600 9; then die "lock timeout: another $STAGE holds $LOCK_FD_PATH"; fi
+fi
 info "lock acquired: $LOCK_FD_PATH"
 
 # --------------------------------------------------------------------- run --
