@@ -1,0 +1,17 @@
+diff --git a/cmake/therock_amdgpu_targets.cmake b/cmake/therock_amdgpu_targets.cmake
+index cc86e5c1b..d4fcbe2a9 100644
+--- a/cmake/therock_amdgpu_targets.cmake
++++ b/cmake/therock_amdgpu_targets.cmake
+@@ -243,11 +243,7 @@ therock_add_amdgpu_target(gfx1153 "AMD Radeon 820M iGPU" FAMILY igpu-all gfx115X
+ )
+ 
+ # gfx120X family
+-therock_add_amdgpu_target(gfx1200 "AMD RX 9060 / XT" FAMILY dgpu-all gfx120X-all
+-  EXCLUDE_TARGET_PROJECTS
+-    hipSPARSELt # https://github.com/ROCm/TheRock/issues/2042
+-    rocprofiler-compute # https://github.com/ROCm/TheRock/issues/2892
+-)
++# rvocs: R9700 is gfx1201 only; skip gfx1200 to halve device-code build time
+ therock_add_amdgpu_target(gfx1201 "AMD RX 9070 / XT" FAMILY dgpu-all gfx120X-all
+   EXCLUDE_TARGET_PROJECTS
+     hipSPARSELt # https://github.com/ROCm/TheRock/issues/2042
