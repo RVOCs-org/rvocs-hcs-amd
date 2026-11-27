@@ -17,8 +17,14 @@ fi
 GPU_ARGS=()
 if [ "${GPU_RUN:-0}" = 1 ]; then
   [ -e /dev/kfd ] || die "no /dev/kfd on this host, cannot run the GPU smoke test"
+  # Numeric GIDs of the device nodes: this host has no video/render entries in
+  # /etc/group, and "docker run --group-add render" then fails with
+  #   Unable to find group render: no matching entries in group file
   GPU_ARGS=(--device=/dev/kfd --device=/dev/dri --ipc=host
-            --group-add video --group-add render --security-opt seccomp=unconfined)
+            --security-opt seccomp=unconfined)
+  for dev in /dev/kfd /dev/dri/renderD128; do
+    [ -e "$dev" ] && GPU_ARGS+=(--group-add "$(stat -c '%g' "$dev")")
+  done
   log "GPU smoke test enabled (mounting /dev/kfd and /dev/dri)"
 fi
 
