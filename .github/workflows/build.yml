@@ -252,7 +252,10 @@ jobs:
     concurrency:
       group: gpu-r9700          # never two GPU jobs at once
       cancel-in-progress: false
-    environment: gpu-approval    # manual approval before touching the card
+    # 无人工闸门：本机是单机实验环境，整条流水线要无人值守跑完。
+    # 需要恢复审批时，取消下面一行注释，并在 Settings->Environments 里给
+    # gpu-approval 加 Required reviewers。
+    # environment: gpu-approval  # manual approval before touching the card
     steps:
       - name: Sync source tree (no checkout action)
         run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
