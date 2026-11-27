@@ -38,6 +38,13 @@ VLLM_DEFAULT_MODEL="${VLLM_DEFAULT_MODEL:-/models/Qwen3.5-9B}"
 VLLM_DEFAULT_PORT="${VLLM_DEFAULT_PORT:-8000}"
 VLLM_RCCL_FIX="${VLLM_RCCL_FIX:-auto}"       # auto|1|0: write multi-GPU NCCL compatibility defaults
 
+# ---- rccl-tests benchmark tools ----
+# Build all_reduce_perf and friends from rocm-systems/projects/rccl-tests and
+# install them into the dist tree so they ship in the images. The default
+# TheRock build does not include them (rccl is built with BUILD_TESTS=OFF and
+# the rccl-tests project is not in the build graph). 0 skips the step.
+BUILD_RCCL_TESTS="${BUILD_RCCL_TESTS:-1}"
+
 # ---- image naming ----
 #   rvocs-vllm-therock<rocm major.minor>-<img arch>:<repository version>
 #   e.g. rvocs-vllm-therock10.0-riscv64:v0.1.0
