@@ -187,10 +187,12 @@ jobs:
 
       - name: Image tag
         id: meta
-        # RVOCs-CI-2026-11-26 -> :vCI-2026-11-26 ; anything else keeps :sha-<12>
+        # Daily image name: RVOCs-CI-<YYYY-MM-DD> using the UTC date of the run,
+        # so a tag created yesterday but rebuilt today still yields today's name.
+        # Any other ref keeps :sha-<12>.
         run: |
           case "$GITHUB_REF_NAME" in
-            RVOCs-CI-*) T="vCI-${GITHUB_REF_NAME#RVOCs-CI-}" ;;
+            RVOCs-CI-*) T="RVOCs-CI-$(date -u +%Y-%m-%d)" ;;
             *)          T="sha-${GITHUB_SHA::12}" ;;
           esac
           echo "tag=${SWR_REGISTRY}/${SWR_REPO}:$T" >> "$GITHUB_OUTPUT"
