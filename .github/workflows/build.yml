@@ -326,3 +326,14 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             "$ART_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/release/digest.txt#digest.txt" --clobber \
             || echo "::warning::release not found, digest only in local artifacts"
+
+  report:
+    needs: [build, wheels, image, verify]
+    if: always()
+    runs-on: [self-hosted, linux, riscv64]
+    steps:
+      - name: Build and email the CI report
+        run: |
+          cd "$RVOCS_ROOT" && GITHUB_RUN_ID="${{ github.run_id }}" REPO_SLUG="${{ github.repository }}" \
+            MAIL_SUBJECT="[${{ github.repository }}] CI ${{ job.status }} · ${{ github.ref_name }} · #${{ github.run_number }}" \
+            bash scripts/ci-report.sh
