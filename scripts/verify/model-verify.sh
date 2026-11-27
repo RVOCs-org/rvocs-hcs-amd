@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Model-level functional + performance check for the vllm image (single card).
 #   usage: model-verify.sh <image-tag> [model-dir]
-# env: MODEL_DIR PORT MAXLEN GPU_UTIL SEQS BATCH ENFORCE_EAGER VLLM_USE_V1 START_TIMEOUT OUT_DIR
+# env: MODEL_DIR PORT MAXLEN GPU_UTIL START_TIMEOUT OUT_DIR
 #
 # 2026-11-27 incident: with MAXLEN=8192 the V1 engine computed a KV budget that
 # asked for 256 GiB (torch.OutOfMemoryError, only 7.13 GiB free). The defaults
@@ -11,7 +11,7 @@ set -uo pipefail
 IMAGE="${1:?image tag}"
 MODEL_DIR="${MODEL_DIR:-${2:-/home/ubuntu/models/Qwen3.8-27B-AWQ-INT4}}"
 PORT="${PORT:-18080}"; MAXLEN="${MAXLEN:-8192}"; GPU_UTIL="${GPU_UTIL:-0.85}"
-START_TIMEOUT="${START_TIMEOUT:-600}"
+START_TIMEOUT="${START_TIMEOUT:-900}"
 OUT_DIR="${OUT_DIR:-/home/ubuntu/RVOCs-CICD/rvocs-hcs-amd/artifacts/model-verify}"
 NAME=rvocs-model-verify
 mkdir -p "$OUT_DIR"; TS=$(date +%Y%m%d-%H%M%S)
