@@ -122,6 +122,15 @@ build_one() { # build_one <stage>
     bash "$script" 2>&1 | tee -a "$LOG_DIR/wheels-${stage}.log"
   [ "${PIPESTATUS[0]}" = 0 ] || die "$stage build failed (see $LOG_DIR/wheels-${stage}.log)"
   printf '%s\n' "$fp" > "$stampf"
+  # Keep only the wheel that matches the current inputs: a rebuild leaves the old
+  # file behind (date or commit in the name), and two versions in the wheelhouse
+  # make every later "pip install <glob>" fail with ResolutionImpossible.
+  local keep
+  keep=$(ls -t "$WHEELHOUSE"/${stage}-*.whl 2>/dev/null | head -1)
+  if [ -n "$keep" ]; then
+    find "$WHEELHOUSE" -maxdepth 1 -name "${stage}-*.whl" ! -name "$(basename "$keep")" -delete
+    log "wheelhouse: kept $(basename "$keep") (pruned older $stage wheels)"
+  fi
 }
 
 # riscv64: libtorch_hip.so references the libMIOpen C API symbols, but the linker's
@@ -171,10 +180,17 @@ install_miopen_stub() {
 }
 
 install_wheel() { # install_wheel <name-glob>
-  local n="$1"
+  local n="$1" w
+  # Several wheels of one component can coexist: vLLM embeds the build date in its
+  # local version (...rocm100.d20261124 vs ...d20261126). Handing the whole glob to
+  # pip makes it see two versions of the same distribution and it fails with
+  #   ERROR: Cannot install vllm ... and vllm ... / ResolutionImpossible
+  # (2026-11-26 incident). Always install the newest wheel only.
+  w=$(ls -t "$WHEELHOUSE"/${n}-*.whl 2>/dev/null | head -1)
+  [ -n "$w" ] || die "no wheel found for $n in $WHEELHOUSE"
   # --force-reinstall: with the same name and version pip would skip the install
   # and leave a stale, broken wheel in the venv
-  run "$PIP" install -q --no-deps --force-reinstall "$WHEELHOUSE"/${n}-*.whl
+  run "$PIP" install -q --no-deps --force-reinstall "$w"
 }
 
 # Multi-GPU capability check.
