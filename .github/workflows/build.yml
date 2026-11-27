@@ -269,6 +269,12 @@ jobs:
           export RVOCS_LOCK_HELD=1
           cd "$RVOCS_ROOT" && bash ci/stage.sh verify --tag "${{ needs.image.outputs.tag }}" --timeout 3600
 
+      - name: Model functional + performance (Qwen3.8-27B-AWQ-INT4)
+        run: |
+          exec 9>/var/lock/rvocs-gpu.lock && flock -w 900 9
+          export RVOCS_LOCK_HELD=1
+          cd "$RVOCS_ROOT" && bash scripts/verify/model-verify.sh "${{ needs.image.outputs.tag }}"
+
       - name: Benchmark regression (c=4)
         if: ${{ inputs.bench || github.event_name != 'workflow_dispatch' }}
         run: |
