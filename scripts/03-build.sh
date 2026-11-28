@@ -42,11 +42,42 @@ if [ -f "$SCRIPT_DIR/../ci/lib/inputs.sh" ]; then
   FP="$(stage_fp "$REPO_ROOT" build "$SRC_TREE")-${COMPONENTS}-${GPU_TARGET}-${THEROCK_EXTRA_ARGS:-}"
 fi
 if [ "${RVOCS_PRINT_FP:-0}" = 1 ]; then printf 'FP=%s\n' "$FP"; exit 0; fi
+# ---------------------------------------------------------------------------
+# prune_foreign_arch_devcode - drop device code for arches we did not build
+# ---------------------------------------------------------------------------
+# $DIST_DIR is a persistent install tree: narrowing THEROCK_AMDGPU_TARGETS (or
+# removing a target in therock_amdgpu_targets.cmake) makes ninja skip those
+# subprojects, but blobs installed by earlier multi-arch runs stay behind --
+# rocBLAS Tensile fallback libs, hipBLASLt library/<arch>/, .kpack entries.
+# 05-image.sh copies the dist wholesale, so stale arches would ship in the image.
+# Measured 2026-11-28: 119 gfx1200 files (dated 11-22/11-23) survived a
+# gfx1201-only build and would have entered RVOCs-CI-2026-11-28.
+# RVOCS_PRUNE_OTHER_ARCH=0 keeps them (debugging only).
+prune_foreign_arch_devcode() {
+  [ "$DRY_RUN" != 1 ] || return 0
+  [ -n "${GPU_TARGET:-}" ] || return 0
+  [ "${RVOCS_PRUNE_OTHER_ARCH:-1}" = 1 ] || return 0
+  local f pruned=0 left=0
+  while IFS= read -r f; do
+    case "$f" in
+      *"$GPU_TARGET"*) continue ;;   # keep the arch we build for
+    esac
+    rm -rf "$f" && pruned=$((pruned + 1))
+  done < <(find "$DIST_DIR" \( -name '*gfx1[0-9][0-9][0-9]*' -o -name '*gfx9[0-9][0-9][0-9]*' \) -print 2>/dev/null)
+  if [ "$pruned" -gt 0 ]; then
+    log "pruned $pruned foreign-arch device-code path(s); dist keeps $GPU_TARGET only"
+  fi
+  left=$(find "$DIST_DIR" \( -name '*gfx1[0-9][0-9][0-9]*' -o -name '*gfx9[0-9][0-9][0-9]*' \) ! -name "*$GPU_TARGET*" -print 2>/dev/null | wc -l)
+  [ "${left:-0}" -gt 0 ] && warn "prune left $left foreign-arch path(s) under $DIST_DIR"
+  return 0
+}
+
 if [ "$DRY_RUN" != 1 ] && [ -n "$FP" ] \
    && [ "${FORCE_REBUILD:-0}" != 1 ] && [ "${RECONFIGURE:-0}" != 1 ] \
    && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$FP" ] && [ -d "$DIST_DIR/lib" ]; then
   log "inputs unchanged (fp=$FP) and dist present -> skipping configure+ninja (nothing to rebuild)"
   ensure_dist_dev_artifacts
+  prune_foreign_arch_devcode
   log "build done (cached)"
   exit 0
 fi
@@ -394,5 +425,6 @@ if [ "${BUILD_RCCL_TESTS:-1}" = 1 ]; then
 fi
 
 ensure_dist_dev_artifacts
+prune_foreign_arch_devcode
 [ "$DRY_RUN" != 1 ] && [ -n "$FP" ] && printf '%s\n' "$FP" > "$STAMP"
 log "build done"
