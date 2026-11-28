@@ -1,0 +1,107 @@
+name: runner-smoke
+
+# P0 冒烟（无 action 版）：验证 self-hosted riscv64 runner 能执行 job。
+#
+# 为什么不用 actions/checkout@v4 和 actions/upload-artifact@v4：
+#   本机 codeload.github.com 被墙（20s 超时），所有 JS action 都要从 codeload
+#   下载 tar.gz，会卡住直到 job 超时。构建机已有持久化仓库（RVOCS_ROOT），
+#   产物又落在共享文件系统上，因此 checkout / artifact 都不需要。
+#   触发：推送到任意 ci/** 分支，或手动 dispatch。
+
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RVOCS_ROOT: /home/ubuntu/RVOCs-CICD/rvocs-hcs-amd
+  LOG_ROOT: /home/ubuntu/RVOCs-CICD/logs/ci-smoke
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, linux, riscv64, amd-gpu]
+    timeout-minutes: 10
+    steps:
+      - name: Runner identity
+        run: |
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_os=${RUNNER_OS:-unknown} arch=${RUNNER_ARCH:-unknown}"
+          echo "workspace=${GITHUB_WORKSPACE}"
+          env | grep -E '^RUNNER_(NAME|OS|ARCH|TRACKING_ID)=' | sort
+
+      - name: Host facts
+        run: |
+          uname -a
+          echo "nproc=$(nproc)"
+          free -g | head -2
+          df -h / | tail -1
+          echo "kernel=$(uname -r)"
+
+      - name: Repo state (no checkout needed)
+        run: |
+          R="$RVOCS_ROOT"
+          echo "root=$(realpath "$R")"
+          echo "root_head=$(git -C "$R" rev-parse HEAD)"
+          echo "event_sha=${GITHUB_SHA}"
+          echo "dirty_entries=$(git -C "$R" status --porcelain=v1 | wc -l)"
+          echo "workflows=$(ls -1 "$R/.github/workflows" 2>/dev/null | tr '\n' ' ')"
+
+      - name: Docker (passwordless, no sudo)
+        run: |
+          docker version --format 'server={{.Server.Version}}'
+          echo "images=$(docker images -q | wc -l)"
+          docker images --format '{{.Repository}}:{{.Tag}}' | head -5
+
+      - name: GPU and device nodes
+        run: |
+          ls -l /dev/kfd 2>&1 || echo "MISSING /dev/kfd"
+          ls -1 /dev/dri 2>&1 || echo "MISSING /dev/dri"
+          if command -v amd-smi >/dev/null; then amd-smi list 2>&1 | head -15; else echo "amd-smi: not on host"; fi
+          if command -v rocm-smi >/dev/null; then rocm-smi --showid 2>&1 | head -10; else echo "rocm-smi: not on host"; fi
+
+      - name: Toolchain and CLI
+        run: |
+          for c in gcc clang cmake ninja python3 flock jq gh git tar; do
+            printf '%-8s %s\n' "$c" "$(command -v "$c" || echo MISSING)"
+          done
+          python3 -V
+
+      - name: CI locks writable
+        run: |
+          exec 9>/var/lock/rvocs-ci.lock && echo "ci_lock=OK"
+          exec 8>/var/lock/rvocs-gpu.lock && echo "gpu_lock=OK"
+
+      - name: Write evidence to shared filesystem
+        run: |
+          OUT="$LOG_ROOT/${GITHUB_RUN_ID}"
+          mkdir -p "$OUT"
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "sha=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "runner=${RUNNER_NAME}"
+            echo "root_head=$(git -C "$RVOCS_ROOT" rev-parse HEAD)"
+            uname -a
+            echo "nproc=$(nproc)"
+            docker version --format 'docker_server={{.Server.Version}}'
+          } > "$OUT/evidence.txt"
+          cat "$OUT/evidence.txt"
+          echo "saved_to=$OUT/evidence.txt"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### runner-smoke"
+            echo "- runner: \`${RUNNER_NAME}\`"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

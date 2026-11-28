@@ -17,18 +17,15 @@ fi
 GPU_ARGS=()
 if [ "${GPU_RUN:-0}" = 1 ]; then
   [ -e /dev/kfd ] || die "no /dev/kfd on this host, cannot run the GPU smoke test"
-  # pass numeric gids: name lookup happens in the docker daemon, which can
-  # fail to resolve host group names after a daemon restart (--group-add
-  # render -> "no matching entries in group file") even when /etc/group has
-  # the entry. Numeric gids always work.
-  _gid() { getent group "$1" | cut -d: -f3; }
-  _vg=$(_gid video); _rg=$(_gid render)
-  [ -n "$_vg" ] || die "no video group on this host"
-  [ -n "$_rg" ] || { warn "no render group on this host, adding video gid only"; _rg=""; }
+  # Numeric GIDs of the device nodes: this host has no video/render entries in
+  # /etc/group, and "docker run --group-add render" then fails with
+  #   Unable to find group render: no matching entries in group file
   GPU_ARGS=(--device=/dev/kfd --device=/dev/dri --ipc=host
-            --group-add "$_vg" --security-opt seccomp=unconfined)
-  [ -n "$_rg" ] && GPU_ARGS+=(--group-add "$_rg")
-  log "GPU smoke test enabled (mounting /dev/kfd and /dev/dri; gids video=$_vg render=$_rg)"
+            --security-opt seccomp=unconfined)
+  for dev in /dev/kfd /dev/dri/renderD128; do
+    [ -e "$dev" ] && GPU_ARGS+=(--group-add "$(stat -c '%g' "$dev")")
+  done
+  log "GPU smoke test enabled (mounting /dev/kfd and /dev/dri)"
 fi
 
 INNER=$(cat <<'EOS'

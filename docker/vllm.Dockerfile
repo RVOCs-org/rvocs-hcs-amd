@@ -60,7 +60,11 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         python3 python3-dev \
         libnuma1 libedit2 libelf1 libdrm2 libpciaccess0 libzstd1 zlib1g \
-        libgomp1 libtinfo6 ca-certificates libstdc++6; \
+        libgomp1 libtinfo6 ca-certificates libstdc++6 libopenblas0; \
+    # libopenblas0: torch built against the host OpenBLAS (DT_NEEDED
+    # libopenblas.so.0). The host satisfied it from apt; the image must too,
+    # otherwise "import torch" dies with
+    #   ImportError: libopenblas.so.0: cannot open shared object file \
     apt-get update; \
     for p in libxml2-16 libfabric1 \
              libtiff6 libjpeg62-turbo libjpeg-turbo8 libpng16-16 libwebp7 libwebpdemux2 \

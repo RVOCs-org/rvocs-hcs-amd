@@ -1,0 +1,5 @@
+--- a/cmake/therock_amdgpu_targets.cmake
++++ b/cmake/therock_amdgpu_targets.cmake
+@@ -246,1 +246,1 @@
+-therock_add_amdgpu_target(gfx1200 "AMD RX 9060 / XT" FAMILY dgpu-all gfx120X-all
++therock_add_amdgpu_target(gfx1200 "AMD RX 9060 / XT" FAMILY dgpu-all

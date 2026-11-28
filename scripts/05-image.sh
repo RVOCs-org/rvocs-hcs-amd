@@ -145,7 +145,7 @@ Deploy example (on the target host; requires the amdgpu driver and a model direc
     $IMAGE_TAG
 
   # 2-GPU tensor parallelism
-  docker run ... -e HIP_VISIBLE_DEVICES=0,1 -e EXTRA_ARGS="--tensor-parallel-size 2" $IMAGE_TAG
+  docker run ... -e HIP_VISIBLE_DEVICES=0 $IMAGE_TAG
 EOF
 else
   cat <<EOF

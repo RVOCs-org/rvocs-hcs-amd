@@ -12,6 +12,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+if [ -f "$SCRIPT_DIR/../ci/lib/inputs.sh" ]; then
+  # shellcheck source=../ci/lib/inputs.sh
+  source "$SCRIPT_DIR/../ci/lib/inputs.sh"
+fi
 
 if [ "$IMAGE_KIND" != vllm ]; then
   log "the runtime image needs no Python stack, skipping"
@@ -82,9 +86,30 @@ build_one() { # build_one <stage>
   [ -f "$script" ] || die "missing wheel build script: scripts/wheels/${stage}.sh"
   # Skip the build when the wheel already exists (a torch build takes 2 hours and
   # must not be repeated just because a later component failed)
+  # Reuse a wheel only when the content it was built from is unchanged. A bare
+  # "wheel file exists" check silently kept stale wheels (e.g. a torch built
+  # before RCCL landed), while an mtime/pin based check rebuilt 2 hours for a
+  # no-op. The stamp records a content fingerprint instead (ci/lib/inputs.sh).
+  local fp stampf stampd="$WHEELHOUSE/.stamps"
+  # NOTE: the third argument must be the TheRock *source* work tree. It used to be
+  # "$(rocm_tree)" (the install prefix), which is not a git work tree, so
+  # upstream_fp degenerated to a constant and an upstream source change never
+  # invalidated the wheels (found 2026-11-26 while seeding stamps).
+  fp="$(wheel_fp "$REPO_ROOT" "$stage" "${SRC_TREE:-$REPO_ROOT/upstream/therock}")"
+  stampf="$stampd/$stage.fp"
+  mkdir -p "$stampd"
   if ls "$WHEELHOUSE"/${stage}-*.whl >/dev/null 2>&1 && [ "${FORCE_REBUILD:-0}" != 1 ]; then
-    log "---------- $stage wheel already present, skipping (FORCE_REBUILD=1 forces a rebuild) ----------"
-    return 0
+    if [ -f "$stampf" ] && [ "$(cat "$stampf")" = "$fp" ]; then
+      log "---------- $stage wheel up to date (inputs unchanged fp=$fp), skipping (FORCE_REBUILD=1 forces a rebuild) ----------"
+      return 0
+    fi
+    if [ -f "$stampf" ]; then
+      log "---------- $stage inputs changed (fp $(cat "$stampf") -> $fp), rebuilding ----------"
+    else
+      log "---------- $stage wheel present but no input stamp yet -> adopting it (fp=$fp) ----------"
+      printf '%s\n' "$fp" > "$stampf"
+      return 0
+    fi
   fi
 
   log "---------- building $stage ----------"
@@ -96,6 +121,16 @@ build_one() { # build_one <stage>
   WHEELHOUSE="$WHEELHOUSE" GPU_TARGET="$GPU_TARGET" ARCH="$ARCH" JOBS="$JOBS" \
     bash "$script" 2>&1 | tee -a "$LOG_DIR/wheels-${stage}.log"
   [ "${PIPESTATUS[0]}" = 0 ] || die "$stage build failed (see $LOG_DIR/wheels-${stage}.log)"
+  printf '%s\n' "$fp" > "$stampf"
+  # Keep only the wheel that matches the current inputs: a rebuild leaves the old
+  # file behind (date or commit in the name), and two versions in the wheelhouse
+  # make every later "pip install <glob>" fail with ResolutionImpossible.
+  local keep
+  keep=$(ls -t "$WHEELHOUSE"/${stage}-*.whl 2>/dev/null | head -1)
+  if [ -n "$keep" ]; then
+    find "$WHEELHOUSE" -maxdepth 1 -name "${stage}-*.whl" ! -name "$(basename "$keep")" -delete
+    log "wheelhouse: kept $(basename "$keep") (pruned older $stage wheels)"
+  fi
 }
 
 # riscv64: libtorch_hip.so references the libMIOpen C API symbols, but the linker's
@@ -113,11 +148,49 @@ fix_torch_miopen_needed() {
   run patchelf --add-needed libMIOpen.so.1 "$so" || warn "patchelf failed (importing torch may report missing miopen symbols)"
 }
 
+# riscv64 / TheRock: this torch was built with USE_MIOPEN=0, but its generated
+# HIP code still calls the at::native::miopen_* wrappers, so importing torch
+# fails with
+#   ImportError: libtorch_hip.so: undefined symbol:
+#     _ZN2at6native28miopen_convolution_transposeERKNS_6TensorES3_...
+# The runtime image already solves this the same way (a 14 KB shim installed as
+# /opt/rocm/lib/libMIOpen.so.1, see docker/miopen-stub/). torch/lib/ is searched
+# before the ROCm lib dirs (libtorch_hip.so carries a DT_NEEDED entry for
+# libMIOpen.so.1), so dropping the shim there makes the host-side import check
+# resolve exactly like the image does. Text models served by vLLM never call the
+# MIOpen convolution/batch-norm entry points.
+install_miopen_stub() {
+  local src="$SCRIPT_DIR/../docker/miopen-stub/libMIOpen.so.1" dst rt
+  [ -f "$src" ] || { warn "MIOpen shim missing: $src (importing torch will fail)"; return 0; }
+  # torch/lib (searched via $ORIGIN) and dist/rocm/lib (LD_LIBRARY_PATH, and the
+  # layout the image ships) both need the shim: the real 473 MB MIOpen does not
+  # export the at::native::miopen_* wrappers, and whenever it is found first the
+  # import fails with "undefined symbol ...miopen_convolution_transpose".
+  dst=$(ls -d "$VENV_STACK"/lib/python3*/site-packages/torch/lib 2>/dev/null | head -1 || true)
+  if [ -n "$dst" ] && ! cmp -s "$src" "$dst/libMIOpen.so.1"; then
+    log "installing MIOpen shim -> $dst/libMIOpen.so.1 (torch built with USE_MIOPEN=0)"
+    run cp -f "$src" "$dst/libMIOpen.so.1"
+  fi
+  rt="$(rocm_tree)"
+  if [ -f "$rt/lib/libMIOpen.so.1.0" ] && ! cmp -s "$src" "$rt/lib/libMIOpen.so.1.0"; then
+    log "installing MIOpen shim -> $rt/lib/libMIOpen.so.1.0 (matches the image layout)"
+    run cp -f "$src" "$rt/lib/libMIOpen.so.1.0"
+  fi
+  return 0
+}
+
 install_wheel() { # install_wheel <name-glob>
-  local n="$1"
+  local n="$1" w
+  # Several wheels of one component can coexist: vLLM embeds the build date in its
+  # local version (...rocm100.d20261124 vs ...d20261126). Handing the whole glob to
+  # pip makes it see two versions of the same distribution and it fails with
+  #   ERROR: Cannot install vllm ... and vllm ... / ResolutionImpossible
+  # (2026-11-26 incident). Always install the newest wheel only.
+  w=$(ls -t "$WHEELHOUSE"/${n}-*.whl 2>/dev/null | head -1)
+  [ -n "$w" ] || die "no wheel found for $n in $WHEELHOUSE"
   # --force-reinstall: with the same name and version pip would skip the install
   # and leave a stale, broken wheel in the venv
-  run "$PIP" install -q --no-deps --force-reinstall "$WHEELHOUSE"/${n}-*.whl
+  run "$PIP" install -q --no-deps --force-reinstall "$w"
 }
 
 # Multi-GPU capability check.
@@ -153,6 +226,7 @@ wheels_source() {
   build_one torch
   install_wheel torch
   fix_torch_miopen_needed
+  install_miopen_stub
   check_torch_nccl
   log "torch: $("$PY" -c 'import torch;print(torch.__version__)' 2>/dev/null || echo 'pending check')"
 
@@ -290,6 +364,13 @@ esac
 # Verification
 if [ "$DRY_RUN" != 1 ]; then
   log "verifying imports ..."
+  # Re-apply the two torch fix-ups immediately before verification: a later pip
+  # step (vLLM dependency resolution) can force-reinstall torch and silently drop
+  # both the libMIOpen DT_NEEDED entry and the shim, which is exactly how the
+  # 2026-11-26 import failures happened after the earlier fixed-up install.
+  # Both helpers are idempotent.
+  fix_torch_miopen_needed
+  install_miopen_stub
   "$PY" - <<'PYEOF'
 import sys
 # Everything here is a hard requirement at serving time, so check it always.

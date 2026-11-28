@@ -1,0 +1,351 @@
+name: build-and-verify
+
+# L1-L4 - heavy pipeline. Runs ONLY on the self-hosted riscv64 build host
+# (10.10.128.103). Never expose this to fork PRs: the runner has passwordless
+# docker, i.e. effectively root.
+#
+# IMPORTANT - this workflow is deliberately ACTION-FREE (no `uses:` anywhere).
+#   On this network codeload.github.com is unreachable (curl: 20 s timeout,
+#   code=000); every JS action's tarball comes from codeload, so
+#   `actions/checkout` and `actions/upload-artifact` hang until the job is
+#   cancelled. Replacements:
+#     checkout        -> ci/ci-sync.sh against the persistent tree at $RVOCS_ROOT
+#     upload-artifact -> copy into $ART_ROOT/<run_id>-<attempt>/ (same host)
+#   Verified by runner-smoke run 45568620705 (conclusion=success).
+#
+# Split into 4 jobs because the full chain is 4-6 h and a single job would hit
+# the 6 h limit with no way to resume:
+#   build   --fetch/--workdir/--build (gfx1201 only, 80 cores)
+#   wheels  --torch/triton/torchvision/vllm (cache hit => minutes)
+#   image   --assemble context + docker build + push SWR (17.1 GB, registry only)
+#   verify  --exclusive GPU, smoke + optional bench regression
+#   preflight -- cheap validation job, the only one that runs on `push` to ci/**
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Ignore stage markers (full rebuild)"
+        type: boolean
+        default: false
+      bench:
+        description: "Run bench regression (c=4)"
+        type: boolean
+        default: true
+  push:
+    branches: ["ci/**"]      # only the `preflight` job runs for these pushes
+    tags: ["v*", "RVOCs-*"]  # full pipeline (v*-nodep / RVOCs-*-nodep skip image+verify)
+  schedule:
+    - cron: "0 18 * * *"     # 02:00 Asia/Shanghai nightly full run
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rvocs-cpu
+  cancel-in-progress: false
+
+env:
+  INNER_JOBS: "48"   # upper bound; scripts/03-build.sh clamps by MemAvailable
+  CCACHE_DIR: /home/ubuntu/.ccache
+  GIT_TERMINAL_PROMPT: "0"
+  # 允许仓库变量覆盖，便于换宿主/换目录；未设置时用本机已验证路径
+  RVOCS_ROOT: ${{ vars.RVOCS_ROOT || '/home/ubuntu/RVOCs-CICD/rvocs-hcs-amd' }}
+  ART_ROOT: ${{ vars.RVOCS_ARTIFACTS || '/home/ubuntu/RVOCs-CICD/artifacts' }}
+  SWR_REGISTRY: swr.cn-east-3.myhuaweicloud.com
+  SWR_REPO: cloud-mdgx/rvocs-vllm-therock10.0-r9700-riscv64
+  MODEL_DIR: /home/ubuntu/models/Qwen3.8-27B-AWQ-INT4
+
+jobs:
+  # ------------------------------------------------------------ L0 preflight --
+  # Triggered by `push` to ci/** only. Runs the same guard + preflight steps the
+  # build job uses, in ~1 minute, so a branch can be validated without starting
+  # a 4-6 h pipeline.
+  preflight:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/ci/')
+    runs-on: [self-hosted, linux, riscv64, amd-gpu]
+    timeout-minutes: 15
+    steps:
+      - name: Sync source tree (no checkout action)
+        run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
+
+      - name: Host guards (disk / memory / network)
+        run: |
+          avail=$(df -BG --output=avail /home | tail -1 | tr -dc '0-9')
+          mem=$(awk '/MemAvailable/{printf "%d",$2/1024/1024}' /proc/meminfo)
+          echo "disk=${avail}G mem=${mem}G"
+          [ "$avail" -ge 120 ] || { echo "::error::disk headroom ${avail}G < 120G"; exit 1; }
+          [ "$mem" -ge 40 ]   || { echo "::error::mem headroom ${mem}G < 40G"; exit 1; }
+          curl -sfI -m 10 https://github.com >/dev/null \
+            || echo "::warning::github.com unreachable (proxy may be required)"
+
+      - name: Preflight (toolchain / docker / patchelf)
+        run: cd "$RVOCS_ROOT" && bash ci/stage.sh preflight
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### preflight"
+            echo "- ref: \`$GITHUB_REF\`"
+            echo "- sha: \`$GITHUB_SHA\`"
+            echo "- root: \`$RVOCS_ROOT\` @ \`$(git -C "$RVOCS_ROOT" rev-parse --short HEAD)\`"
+            echo "- logs: see job output (action-free: nothing uploaded)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- L1 build --
+  build:
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
+    runs-on: [self-hosted, linux, riscv64]
+    timeout-minutes: 1440
+    steps:
+      - name: Sync source tree (no checkout action)
+        run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
+
+      - name: Host guards (disk / memory / network)
+        run: |
+          avail=$(df -BG --output=avail /home | tail -1 | tr -dc '0-9')
+          mem=$(awk '/MemAvailable/{printf "%d",$2/1024/1024}' /proc/meminfo)
+          echo "disk=${avail}G mem=${mem}G"
+          [ "$avail" -ge 150 ] || { echo "::error::disk headroom ${avail}G < 150G"; exit 1; }
+          [ "$mem" -ge 60 ]   || { echo "::error::mem headroom ${mem}G < 60G"; exit 1; }
+          curl -sfI -m 10 https://github.com >/dev/null || echo "::warning::github.com unreachable (proxy may be required)"
+
+      - name: Preflight (toolchain / docker / patchelf)
+        run: cd "$RVOCS_ROOT" && bash ci/stage.sh preflight
+
+      - name: Build TheRock (gfx1201 only)
+        run: cd "$RVOCS_ROOT" && bash ci/stage.sh build ${{ inputs.force && '--force' || '' }} --timeout 86400
+
+      - name: Archive logs to shared storage
+        if: always()
+        run: |
+          OUT="$ART_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/build"
+          mkdir -p "$OUT"
+          for f in "$RVOCS_ROOT"/work/logs/ci-*.log "$RVOCS_ROOT"/work/ci-summary.json; do
+            [ -e "$f" ] && cp -a "$f" "$OUT"/ || true
+          done
+          # TheRock keeps the real per-subproject logs (Tensile assembly, CK
+          # instance builds, lld) under build/logs; without them a failed run is
+          # impossible to post-mortem once runner-worker is cleaned up.
+          if [ -d "$RVOCS_ROOT/upstream/therock/build/logs" ]; then
+            mkdir -p "$OUT/therock-logs"
+            cp -a "$RVOCS_ROOT"/upstream/therock/build/logs/*_build.log "$OUT/therock-logs"/ 2>/dev/null || true
+          fi
+          echo "artifacts=$OUT"
+          ls -l "$OUT" 2>/dev/null | head -20 || true
+
+  # --------------------------------------------------------------- L2 wheels --
+  wheels:
+    needs: build
+    runs-on: [self-hosted, linux, riscv64]
+    timeout-minutes: 480
+    steps:
+      - name: Sync source tree (no checkout action)
+        run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
+
+      - name: Build / reuse python wheels
+        run: cd "$RVOCS_ROOT" && bash ci/stage.sh wheels ${{ inputs.force && '--force' || '' }} --timeout 14000
+
+      - name: Wheel manifest (never upload the wheels themselves)
+        run: |
+          mkdir -p "$RVOCS_ROOT/work/artifacts"
+          { echo "# wheels"; for w in "$RVOCS_ROOT"/work/wheelhouse/*.whl; do
+              [ -f "$w" ] && printf '%s  %s  %s\n' "$(sha256sum "$w" | cut -c1-16)" "$(du -h "$w" | cut -f1)" "$(basename "$w")"
+            done; } > "$RVOCS_ROOT/work/artifacts/wheel-manifest.md"
+          cat "$RVOCS_ROOT/work/artifacts/wheel-manifest.md"
+
+      - name: Archive manifest + logs to shared storage
+        if: always()
+        run: |
+          OUT="$ART_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/wheels"
+          mkdir -p "$OUT"
+          for f in "$RVOCS_ROOT"/work/artifacts/wheel-manifest.md \
+                   "$RVOCS_ROOT"/work/logs/ci-*.log \
+                   "$RVOCS_ROOT"/work/ci-summary.json; do
+            [ -e "$f" ] && cp -a "$f" "$OUT"/ || true
+          done
+          echo "artifacts=$OUT"
+          ls -l "$OUT" 2>/dev/null | head -20 || true
+          { echo "### wheels"; sed -n '1,40p' "$RVOCS_ROOT/work/artifacts/wheel-manifest.md" 2>/dev/null; } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- L3 image --
+  image:
+    needs: wheels
+    # A '-nodep' tag skips the SWR push and the GPU stage (no image); a normal
+    # tag such as RVOCs-CI-YYYY-MM-DD builds, pushes and then waits for the
+    # gpu-approval Environment before verify touches the card.
+    if: ${{ !contains(github.ref_name, '-nodep') }}
+    runs-on: [self-hosted, linux, riscv64]
+    timeout-minutes: 90
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Sync source tree (no checkout action)
+        run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
+
+      - name: Image tag
+        id: meta
+        # Daily image name: RVOCs-CI-<YYYY-MM-DD> using the UTC date of the run,
+        # so a tag created yesterday but rebuilt today still yields today's name.
+        # Any other ref keeps :sha-<12>.
+        run: |
+          case "$GITHUB_REF_NAME" in
+            RVOCs-CI-*) T="RVOCs-CI-$(date -u +%Y-%m-%d)" ;;
+            *)          T="sha-${GITHUB_SHA::12}" ;;
+          esac
+          echo "tag=${SWR_REGISTRY}/${SWR_REPO}:$T" >> "$GITHUB_OUTPUT"
+          echo "image: ${SWR_REGISTRY}/${SWR_REPO}:$T"
+
+      - name: Registry login
+        # Prefer the repo secrets; until they are configured fall back to the
+        # 0600 on-host credential file that lives outside the repo
+        # (/home/ubuntu/.config/rvocs/swr.env: SWR_USER/SWR_PASSWORD/SWR_REGISTRY).
+        run: |
+          if [ -n "${{ secrets.SWR_USER }}" ]; then
+            U="${{ secrets.SWR_USER }}"; P="${{ secrets.SWR_PASSWORD }}"
+          else
+            set -a; . /home/ubuntu/.config/rvocs/swr.env; set +a
+            U="$SWR_USER"; P="$SWR_PASSWORD"
+          fi
+          printf '%s' "$P" | sudo -n docker login -u "$U" --password-stdin "$SWR_REGISTRY"
+
+      - name: Build image
+        run: cd "$RVOCS_ROOT" && bash ci/stage.sh image --tag "${{ steps.meta.outputs.tag }}" --timeout 4800
+
+      - name: Push + record digest
+        id: push
+        run: |
+          T="${{ steps.meta.outputs.tag }}"
+          # A cache hit in the image stage leaves the local image under an older
+          # name, so the current daily tag may not exist yet -> retag before push.
+          if ! sudo -n docker image inspect "$T" >/dev/null 2>&1; then
+            SRC=$(sudo -n docker images --format '{{.Repository}}:{{.Tag}}' \
+                    | grep -F "rvocs-vllm-therock10.0-r9700-riscv64:" \
+                    | grep -v -F "$T" | head -1)
+            [ -n "$SRC" ] || { echo "no local image available to retag as $T"; exit 1; }
+            echo "retagging $SRC -> $T (image stage was a cache hit)"
+            sudo -n docker tag "$SRC" "$T"
+          fi
+          sudo -n docker push "$T"
+          D=$(sudo -n docker inspect --format '{{index .RepoDigests 0}}' "$T" 2>/dev/null)
+          echo "digest=$D" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RVOCS_ROOT/work/artifacts"
+          echo "$D" > "$RVOCS_ROOT/work/artifacts/image-digest.txt"
+          cat "$RVOCS_ROOT/work/artifacts/image-digest.txt"
+
+      - name: Prune old images (keep newest 3 sha tags)
+        if: always()
+        run: |
+          sudo -n docker images --format '{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}' \
+            | grep 'sha-' | sort -k2 -r | tail -n +4 | cut -f1 \
+            | xargs -r -n1 sudo -n docker rmi || true
+          sudo -n docker image prune -f --filter until=72h || true
+
+      - name: Archive image metadata to shared storage
+        if: always()
+        run: |
+          OUT="$ART_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/image"
+          mkdir -p "$OUT"
+          for f in "$RVOCS_ROOT"/work/artifacts/image-digest.txt "$RVOCS_ROOT"/work/ci-summary.json; do
+            [ -e "$f" ] && cp -a "$f" "$OUT"/ || true
+          done
+          echo "artifacts=$OUT"
+          ls -l "$OUT" 2>/dev/null | head -20 || true
+          { echo "### image"; echo "- tag: \`${{ steps.meta.outputs.tag }}\`"; echo "- digest: \`${{ steps.push.outputs.digest }}\`"; } >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------- L4 verify --
+  verify:
+    needs: image
+    if: ${{ !contains(github.ref_name, '-nodep') }}
+    runs-on: [self-hosted, linux, riscv64, amd-gpu]
+    timeout-minutes: 90
+    concurrency:
+      group: gpu-r9700          # never two GPU jobs at once
+      cancel-in-progress: false
+    # 无人工闸门：本机是单机实验环境，整条流水线要无人值守跑完。
+    # 需要恢复审批时，取消下面一行注释，并在 Settings->Environments 里给
+    # gpu-approval 加 Required reviewers。
+    # environment: gpu-approval  # manual approval before touching the card
+    steps:
+      - name: Sync source tree (no checkout action)
+        run: bash "$RVOCS_ROOT/ci/ci-sync.sh"
+
+      - name: Pull image
+        run: sudo -n docker pull "${{ needs.image.outputs.tag }}"
+
+      - name: GPU smoke (exclusive lock)
+        run: |
+          exec 9>/var/lock/rvocs-gpu.lock && flock -w 900 9
+          export RVOCS_LOCK_HELD=1
+          cd "$RVOCS_ROOT" && bash ci/stage.sh verify --tag "${{ needs.image.outputs.tag }}" --timeout 3600
+
+      - name: Model functional + performance (Qwen3.8-27B-AWQ-INT4)
+        run: |
+          exec 9>/var/lock/rvocs-gpu.lock && flock -w 900 9
+          export RVOCS_LOCK_HELD=1
+          cd "$RVOCS_ROOT" && bash scripts/verify/model-verify.sh "${{ needs.image.outputs.tag }}"
+
+      - name: Benchmark regression (c=4)
+        if: ${{ inputs.bench || github.event_name != 'workflow_dispatch' }}
+        run: |
+          exec 9>/var/lock/rvocs-gpu.lock && flock -w 900 9
+          export RVOCS_LOCK_HELD=1
+          cd "$RVOCS_ROOT" && BENCH_IMAGE="${{ needs.image.outputs.tag }}" bash ci/quick-bench.sh 4
+
+      - name: Archive evidence to shared storage
+        if: always()
+        run: |
+          OUT="$ART_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/verify"
+          mkdir -p "$OUT"
+          for f in "$RVOCS_ROOT"/work/logs/ci-verify-*.log \
+                   "$RVOCS_ROOT"/work/ci-summary.json \
+                   /home/ubuntu/bench-results/ci-bench-summary.json; do
+            [ -e "$f" ] && cp -a "$f" "$OUT"/ || true
+          done
+          echo "artifacts=$OUT"
+          ls -l "$OUT" 2>/dev/null | head -20 || true
+
+  # -------------------------------------------------------------- L5 release --
+  release:
+    # gh release upload 需要写权限；顶层为只读，故在 job 级放开
+    permissions:
+      contents: write
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-nodep')
+    needs: [image, verify]
+    runs-on: [self-hosted, linux, riscv64]
+    timeout-minutes: 30
+    steps:
+      - name: Retag sha -> semantic version
+        run: |
+          SRC="${{ needs.image.outputs.tag }}"
+          VER="${GITHUB_REF_NAME}"
+          DST="${{ env.SWR_REGISTRY }}/${{ env.SWR_REPO }}:$VER"
+          sudo -n docker tag "$SRC" "$DST"
+          sudo -n docker push "$DST"
+          echo "published $DST"
+          echo "- \`$DST\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- digest: \`${{ needs.image.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach digest to release (local file, no artifact upload)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$ART_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/release"
+          printf '%s\n' "${{ needs.image.outputs.digest }}" \
+            > "$ART_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/release/digest.txt"
+          gh release upload "$GITHUB_REF_NAME" \
+            "$ART_ROOT/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/release/digest.txt#digest.txt" --clobber \
+            || echo "::warning::release not found, digest only in local artifacts"
+
+  report:
+    needs: [build, wheels, image, verify]
+    if: always()
+    runs-on: [self-hosted, linux, riscv64]
+    steps:
+      - name: Build and email the CI report
+        run: |
+          cd "$RVOCS_ROOT" && GITHUB_RUN_ID="${{ github.run_id }}" REPO_SLUG="${{ github.repository }}" \
+            MAIL_SUBJECT="[${{ github.repository }}] CI ${{ job.status }} · ${{ github.ref_name }} · #${{ github.run_number }}" \
+            bash scripts/ci-report.sh

@@ -29,6 +29,90 @@ fi
 # ---------------------------------------------------------------------------
 components_flags "$COMPONENTS" || die "unknown component set: $COMPONENTS"
 
+# ------------------------------------------------- content-addressed shortcut --
+# If the inputs are byte-identical to the last successful build and the dist
+# tree is still there, there is nothing to compile. Without this guard the stage
+# calls cmake/ninja anyway, and ninja is mtime based: re-checking out sources in
+# the fetch stage (or any touch) rebuilds hours of work with zero content change.
+FP=""
+STAMP="$THEROCK_BUILD/.rvocs-inputs"
+if [ -f "$SCRIPT_DIR/../ci/lib/inputs.sh" ]; then
+  # shellcheck source=../ci/lib/inputs.sh
+  source "$SCRIPT_DIR/../ci/lib/inputs.sh"
+  FP="$(stage_fp "$REPO_ROOT" build "$SRC_TREE")-${COMPONENTS}-${GPU_TARGET}-${THEROCK_EXTRA_ARGS:-}"
+fi
+if [ "${RVOCS_PRINT_FP:-0}" = 1 ]; then printf 'FP=%s\n' "$FP"; exit 0; fi
+# ---------------------------------------------------------------------------
+# prune_foreign_arch_devcode - keep old-arch device code out of the dist
+# ---------------------------------------------------------------------------
+# $DIST_DIR is a persistent install tree: narrowing THEROCK_AMDGPU_TARGETS (or
+# removing a target in therock_amdgpu_targets.cmake) makes ninja skip those
+# subprojects, but blobs installed by earlier multi-arch runs stay behind --
+# rocBLAS Tensile fallback libs, hipBLASLt library/<arch>/, .kpack entries.
+# 05-image.sh copies the dist wholesale, so stale arches would ship in the image.
+# Measured 2026-11-28: 119 gfx1200 files (dated 11-22/11-23) survived a
+# gfx1201-only build and would have entered RVOCs-CI-2026-11-28.
+#
+# Modes (RVOCS_PRUNE_OTHER_ARCH):
+#   backup (default) - MOVE foreign-arch paths into
+#                      ${RVOCS_ARCHIVE_ROOT:-$REPO_ROOT/work/archive/foreign-arch}/<UTC>/
+#                      using the dist-relative layout plus manifest.txt, so they
+#                      can be put back WITHOUT a rebuild:
+#                        rsync -a <archive>/dist/ "$DIST_DIR/"
+#                      Nothing is ever destroyed on the local/dev path.
+#   delete           - rm -rf them (previous behaviour; use on image builds when
+#                      the archive would waste disk).
+#   0 | off          - leave them in $DIST_DIR untouched.
+prune_foreign_arch_devcode() {
+  [ "$DRY_RUN" != 1 ] || return 0
+  [ -n "${GPU_TARGET:-}" ] || return 0
+  local mode="${RVOCS_PRUNE_OTHER_ARCH:-backup}"
+  case "$mode" in
+    0|off|no) return 0 ;;
+    backup|delete) ;;
+    *) warn "unknown RVOCS_PRUNE_OTHER_ARCH='$mode' -> using backup"; mode=backup ;;
+  esac
+  local f rel pruned=0 left=0 dir=""
+  if [ "$mode" = backup ]; then
+    dir="${RVOCS_ARCHIVE_ROOT:-$REPO_ROOT/work/archive/foreign-arch}/$(date -u +%Y%m%dT%H%M%SZ)"
+  fi
+  while IFS= read -r f; do
+    case "$f" in
+      *"$GPU_TARGET"*) continue ;;   # keep the arch we build for
+    esac
+    if [ "$mode" = backup ]; then
+      rel="${f#"$DIST_DIR"/}"
+      mkdir -p "$dir/dist/$(dirname "$rel")" 2>/dev/null || continue
+      if mv "$f" "$dir/dist/$rel" 2>/dev/null; then
+        printf '%s\n' "$rel" >>"$dir/manifest.txt"
+        pruned=$((pruned + 1))
+      fi
+    else
+      rm -rf "$f" && pruned=$((pruned + 1))
+    fi
+  done < <(find "$DIST_DIR" \( -name '*gfx1[0-9][0-9][0-9]*' -o -name '*gfx9[0-9][0-9][0-9]*' \) -print 2>/dev/null)
+  if [ "$pruned" -gt 0 ]; then
+    if [ "$mode" = backup ]; then
+      log "archived $pruned foreign-arch path(s) -> $dir (restore: rsync -a '$dir/dist/' '$DIST_DIR/')"
+    else
+      log "deleted $pruned foreign-arch path(s); dist keeps $GPU_TARGET only"
+    fi
+  fi
+  left=$(find "$DIST_DIR" \( -name '*gfx1[0-9][0-9][0-9]*' -o -name '*gfx9[0-9][0-9][0-9]*' \) ! -name "*$GPU_TARGET*" -print 2>/dev/null | wc -l)
+  [ "${left:-0}" -gt 0 ] && warn "prune left $left foreign-arch path(s) under $DIST_DIR"
+  return 0
+}
+
+if [ "$DRY_RUN" != 1 ] && [ -n "$FP" ] \
+   && [ "${FORCE_REBUILD:-0}" != 1 ] && [ "${RECONFIGURE:-0}" != 1 ] \
+   && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$FP" ] && [ -d "$DIST_DIR/lib" ]; then
+  log "inputs unchanged (fp=$FP) and dist present -> skipping configure+ninja (nothing to rebuild)"
+  ensure_dist_dev_artifacts
+  prune_foreign_arch_devcode
+  log "build done (cached)"
+  exit 0
+fi
+
 CMAKE_ARGS=(
   "-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
   "-DTHEROCK_AMDGPU_FAMILIES=$GPU_FAMILY"
@@ -78,6 +162,31 @@ fi
 if [ -n "$THEROCK_EXTRA_ARGS" ]; then
   # shellcheck disable=SC2206
   CMAKE_ARGS+=( $THEROCK_EXTRA_ARGS )
+fi
+
+# Memory safety for the compiler subproject (OOM post-mortem 2026-11-25).
+# At -j64 the LLVM/flang compile peaked past 121 GB: one cc1plus compiling flang
+# objects holds ~2.7 GB RSS, the kernel OOM-killed compilers at 17:27 and the
+# whole host wedged (sshd stopped forking, the CI job lost its runner). TheRock
+# forwards these two knobs into the amd-llvm subproject, whose ninja ignores the
+# top-level -j:
+#   FLANG_PARALLEL_COMPILE_JOBS  cap concurrent flang compiles (the memory hog)
+#   LLVM_PARALLEL_LINK_JOBS      cap concurrent lld links (also memory heavy)
+FLANG_COMPILE_JOBS="${FLANG_COMPILE_JOBS:-24}"
+LLVM_LINK_JOBS="${LLVM_LINK_JOBS:-8}"
+CMAKE_ARGS+=(
+  "-DFLANG_PARALLEL_COMPILE_JOBS=$FLANG_COMPILE_JOBS"
+  "-DLLVM_PARALLEL_LINK_JOBS=$LLVM_LINK_JOBS"
+)
+if [ "${DRY_RUN:-0}" != 1 ] && [ -f "$THEROCK_BUILD/CMakeCache.txt" ]; then
+  for kv in "FLANG_PARALLEL_COMPILE_JOBS=$FLANG_COMPILE_JOBS" "LLVM_PARALLEL_LINK_JOBS=$LLVM_LINK_JOBS"; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    cv="$(sed -n "s/^${k}:[A-Z]*=//p" "$THEROCK_BUILD/CMakeCache.txt" | head -1)"
+    if [ "$cv" != "$v" ]; then
+      RECONFIGURE=1
+      log "cache $k='$cv' -> '$v' -> forcing RECONFIGURE=1"
+    fi
+  done
 fi
 
 # ccache (optional, speeds up repeated builds significantly)
@@ -132,6 +241,28 @@ command -v meson >/dev/null 2>&1 || warn "meson not found on PATH (needed when T
 log "build python: $SYSTEM_PYTHON (system interpreter, not the venv)"
 
 # ---------------------------------------------------------------------------
+# gfx1201-only: pin subproject DEFAULT_GPUS
+# ---------------------------------------------------------------------------
+# THEROCK_AMDGPU_TARGETS only reaches subprojects that honour it. hipBLASLt
+# derives its architecture list from DEFAULT_GPUS, which comes from the
+# gfx120X-all family in cmake/therock_amdgpu_targets.cmake. Measured 2026-11-25:
+# a CI run configured hipBLASLt with "gfx1200;gfx1201" and regenerated the whole
+# Tensile device library for both arches. Drop gfx1200 from that family so
+# DEFAULT_GPUS has exactly one member; that changes a cache input, so force a
+# reconfigure. Idempotent, and only active when the target is gfx1201.
+if [ "${GPU_TARGET:-}" = gfx1201 ] && [ "${THEROCK_PIN_AMDGPU_TARGET:-1}" = 1 ]; then
+  pin_out="$("$SCRIPT_DIR/tools/gfx1201-only.sh" "$SRC_TREE/cmake/therock_amdgpu_targets.cmake" 2>&1)" || {
+    warn "gfx1201-only: could not patch therock_amdgpu_targets.cmake; hipBLASLt may build gfx1200 too"
+    pin_out=""
+  }
+  [ -n "$pin_out" ] && printf '%s
+' "$pin_out" | sed 's/^/  /'
+  case "$pin_out" in
+    *CHANGED=1*) RECONFIGURE=1; log "gfx1201-only: family list changed -> forcing RECONFIGURE=1" ;;
+  esac
+fi
+
+# ---------------------------------------------------------------------------
 # configure
 # ---------------------------------------------------------------------------
 # Keep the build hermetic: a host ROCm install (e.g. /opt/rocm -> rocm7.14.0)
@@ -174,10 +305,83 @@ fi
 # ---------------------------------------------------------------------------
 # build
 # ---------------------------------------------------------------------------
+# Memory-aware clamp. Measured 2026-11-25 on this host: one cc1plus compiling
+# LLVM/flang objects peaks at ~2.7 GB RSS; with -j64 that is >170 GB and the
+# kernel OOM-killed compilers at 17:27, which wedged the whole box (sshd could
+# not fork, the CI job lost its runner). Budget 80% of MemAvailable at 3 GB per
+# concurrent compiler so the build degrades in speed instead of dying.
+if [ "$DRY_RUN" != 1 ]; then
+  mem_gb=$(awk '/MemAvailable/{printf "%d",$2/1024/1024}' /proc/meminfo)
+  safe_jobs=$(( mem_gb * 80 / 100 / 3 ))
+  [ "$safe_jobs" -lt 4 ] && safe_jobs=4
+  if [ "$JOBS" -gt "$safe_jobs" ]; then
+    log "clamp parallel $JOBS -> $safe_jobs (MemAvailable ${mem_gb}G, ~3G per compiler)"
+    JOBS=$safe_jobs
+  fi
+fi
+
+# Nested sub-builds read CMAKE_BUILD_PARALLEL_LEVEL from the environment, not
+# from the outer -j, so keep them aligned with the clamped value (unless an
+# explicit sub-build cap is requested further down).
+if [ "${THEROCK_SUBPROJECT_JOBS:-0}" = 0 ]; then
+  export CMAKE_BUILD_PARALLEL_LEVEL="$JOBS"
+fi
+
 # The explicit -j only steers the outer ninja. TheRock's per-component builds
 # (teatime.py -> `cmake --build` without -j) take their parallelism from
 # CMAKE_BUILD_PARALLEL_LEVEL, exported from JOBS in lib/common.sh.
 log "compiling (parallel=$JOBS, nested=$CMAKE_BUILD_PARALLEL_LEVEL)... log: $LOG_DIR/build.log"
+# Sub-build parallelism -------------------------------------------------------
+# Each subproject is built by `cmake --build <dir>` with no -j (verified in
+# build/logs/*_build.log: the EXEC line is plain `cmake --build <dir>`), so
+# every concurrently running subproject spawns its own full-machine job set.
+# Measured 2026-11-25 22:40: rccl + composable_kernel + hipBLASLt + rocFFT were
+# running together -> 247 clang processes on 80 cores, load 160, 0% idle, while
+# composable_kernel only finished 1.3 of 1015 edges per minute. `cmake --build`
+# honours CMAKE_BUILD_PARALLEL_LEVEL from the environment, so one shared value
+# keeps the SUM of sub-builds near the core count (and bounds memory as well).
+# Default 0 = no cap (each sub-build uses the whole machine). Measured on
+# 2026-11-25: capping at 24 made composable_kernel 3x slower (0.4 vs 1.3
+# completed objects per minute), because its instance TUs are pure CPU work
+# and there is no memory win. Set THEROCK_SUBPROJECT_JOBS=<n> to cap again.
+if [ "${THEROCK_SUBPROJECT_JOBS:-0}" != 0 ]; then
+  export CMAKE_BUILD_PARALLEL_LEVEL="${THEROCK_SUBPROJECT_JOBS:-0}"
+  log "sub-build parallelism: CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL (sum over subprojects; THEROCK_SUBPROJECT_JOBS=${THEROCK_SUBPROJECT_JOBS:-0})"
+fi
+
+# rocisa nanobind stable-ABI workaround (riscv64 / Python 3.14) ---------------
+# _rocisa.abi3.so (AMD clang 23) segfaults in __dynamic_cast during TensileLite
+# kernel generation (2026-11-26, reproducible twice, 10-15G RSS -> not memory).
+# Rebuilding without the stable ABI is verified; the helper is idempotent.
+if [ "${DRY_RUN:-0}" != 1 ]; then
+  bash "$SCRIPT_DIR/tools/patch-rocisa-noabi3.sh" "$SCRIPT_DIR/.." || {
+    log "ERROR: rocisa stable-ABI workaround failed"; exit 1; }
+fi
+
+# Progress heartbeat ---------------------------------------------------------
+# The top-level ninja advances once per whole subproject, so hours can pass
+# without a new line in build.log (2026-11-25: hipBLASLt Tensile launched 50198
+# assembly tasks and printed nothing for ~2 h, which looked like a hang). Append
+# one line every 5 min with each subproject's own edge counter plus memory/load,
+# so "slow" can be told apart from "dead".
+if [ "$DRY_RUN" != 1 ]; then
+  (
+    while :; do
+      sleep 300
+      line="$(date +%H:%M:%S) heartbeat"
+      for f in "$THEROCK_BUILD"/logs/*_build.log; do
+        [ -f "$f" ] || continue
+        p="$(grep -aoE '\[[0-9]+/[0-9]+\]' "$f" | tail -1)"
+        [ -n "$p" ] && line="$line $(basename "$f" _build.log)=$p"
+      done
+      line="$line mem=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "%dG/%dG",(t-a)/1048576,t/1048576}' /proc/meminfo)"
+      line="$line load=$(cut -d' ' -f1 /proc/loadavg)"
+      printf '%s\n' "$line" >> "$LOG_DIR/build.heartbeat.log"
+    done
+  ) &
+  HB_PID=$!
+  trap 'kill "$HB_PID" 2>/dev/null || true' EXIT
+fi
 if [ "$DRY_RUN" = 1 ]; then
   printf '  [dry-run] cmake --build %s -j %s\n' "$THEROCK_BUILD" "$JOBS"
 else
@@ -252,4 +456,6 @@ if [ "${BUILD_RCCL_TESTS:-1}" = 1 ]; then
 fi
 
 ensure_dist_dev_artifacts
+prune_foreign_arch_devcode
+[ "$DRY_RUN" != 1 ] && [ -n "$FP" ] && printf '%s\n' "$FP" > "$STAMP"
 log "build done"
