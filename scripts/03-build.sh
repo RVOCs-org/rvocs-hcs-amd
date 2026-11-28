@@ -43,7 +43,7 @@ if [ -f "$SCRIPT_DIR/../ci/lib/inputs.sh" ]; then
 fi
 if [ "${RVOCS_PRINT_FP:-0}" = 1 ]; then printf 'FP=%s\n' "$FP"; exit 0; fi
 # ---------------------------------------------------------------------------
-# prune_foreign_arch_devcode - drop device code for arches we did not build
+# prune_foreign_arch_devcode - keep old-arch device code out of the dist
 # ---------------------------------------------------------------------------
 # $DIST_DIR is a persistent install tree: narrowing THEROCK_AMDGPU_TARGETS (or
 # removing a target in therock_amdgpu_targets.cmake) makes ninja skip those
@@ -52,20 +52,51 @@ if [ "${RVOCS_PRINT_FP:-0}" = 1 ]; then printf 'FP=%s\n' "$FP"; exit 0; fi
 # 05-image.sh copies the dist wholesale, so stale arches would ship in the image.
 # Measured 2026-11-28: 119 gfx1200 files (dated 11-22/11-23) survived a
 # gfx1201-only build and would have entered RVOCs-CI-2026-11-28.
-# RVOCS_PRUNE_OTHER_ARCH=0 keeps them (debugging only).
+#
+# Modes (RVOCS_PRUNE_OTHER_ARCH):
+#   backup (default) - MOVE foreign-arch paths into
+#                      ${RVOCS_ARCHIVE_ROOT:-$REPO_ROOT/work/archive/foreign-arch}/<UTC>/
+#                      using the dist-relative layout plus manifest.txt, so they
+#                      can be put back WITHOUT a rebuild:
+#                        rsync -a <archive>/dist/ "$DIST_DIR/"
+#                      Nothing is ever destroyed on the local/dev path.
+#   delete           - rm -rf them (previous behaviour; use on image builds when
+#                      the archive would waste disk).
+#   0 | off          - leave them in $DIST_DIR untouched.
 prune_foreign_arch_devcode() {
   [ "$DRY_RUN" != 1 ] || return 0
   [ -n "${GPU_TARGET:-}" ] || return 0
-  [ "${RVOCS_PRUNE_OTHER_ARCH:-1}" = 1 ] || return 0
-  local f pruned=0 left=0
+  local mode="${RVOCS_PRUNE_OTHER_ARCH:-backup}"
+  case "$mode" in
+    0|off|no) return 0 ;;
+    backup|delete) ;;
+    *) warn "unknown RVOCS_PRUNE_OTHER_ARCH='$mode' -> using backup"; mode=backup ;;
+  esac
+  local f rel pruned=0 left=0 dir=""
+  if [ "$mode" = backup ]; then
+    dir="${RVOCS_ARCHIVE_ROOT:-$REPO_ROOT/work/archive/foreign-arch}/$(date -u +%Y%m%dT%H%M%SZ)"
+  fi
   while IFS= read -r f; do
     case "$f" in
       *"$GPU_TARGET"*) continue ;;   # keep the arch we build for
     esac
-    rm -rf "$f" && pruned=$((pruned + 1))
+    if [ "$mode" = backup ]; then
+      rel="${f#"$DIST_DIR"/}"
+      mkdir -p "$dir/dist/$(dirname "$rel")" 2>/dev/null || continue
+      if mv "$f" "$dir/dist/$rel" 2>/dev/null; then
+        printf '%s\n' "$rel" >>"$dir/manifest.txt"
+        pruned=$((pruned + 1))
+      fi
+    else
+      rm -rf "$f" && pruned=$((pruned + 1))
+    fi
   done < <(find "$DIST_DIR" \( -name '*gfx1[0-9][0-9][0-9]*' -o -name '*gfx9[0-9][0-9][0-9]*' \) -print 2>/dev/null)
   if [ "$pruned" -gt 0 ]; then
-    log "pruned $pruned foreign-arch device-code path(s); dist keeps $GPU_TARGET only"
+    if [ "$mode" = backup ]; then
+      log "archived $pruned foreign-arch path(s) -> $dir (restore: rsync -a '$dir/dist/' '$DIST_DIR/')"
+    else
+      log "deleted $pruned foreign-arch path(s); dist keeps $GPU_TARGET only"
+    fi
   fi
   left=$(find "$DIST_DIR" \( -name '*gfx1[0-9][0-9][0-9]*' -o -name '*gfx9[0-9][0-9][0-9]*' \) ! -name "*$GPU_TARGET*" -print 2>/dev/null | wc -l)
   [ "${left:-0}" -gt 0 ] && warn "prune left $left foreign-arch path(s) under $DIST_DIR"
