@@ -98,6 +98,9 @@ fi
 echo "== tools =="
 soft "rocm-smi"   test -f /opt/rocm/bin/rocm-smi
 soft "amd-smi"    test -f /opt/rocm/bin/amd-smi
+# rccl-tests is a default build promise (BUILD_RCCL_TESTS=1), so the presence
+# of the tools is a hard check; actually running one needs a GPU.
+check "rccl-tests tools" bash -c 'test -x /opt/rocm/bin/all_reduce_perf'
 
 if [ "${GPU_RUN:-0}" = 1 ]; then
   echo "== GPU (needs /dev/kfd) =="
@@ -118,6 +121,11 @@ if [ "${GPU_RUN:-0}" = 1 ]; then
     if "$V/bin/python" -c 'import torch; assert torch.cuda.is_available(); print("  [ OK ] torch sees GPU:", torch.cuda.get_device_name(0))' 2>/tmp/torchgpu.txt; then :; else
       echo "  [FAIL] torch does not see a GPU"; sed -n '1,10p' /tmp/torchgpu.txt; fail=1
     fi
+  fi
+  # rccl-tests smoke: one 8B all_reduce on the (single visible) device. Proves
+  # the tools link against the in-image RCCL and can launch kernels.
+  if [ -x /opt/rocm/bin/all_reduce_perf ]; then
+    check "all_reduce_perf smoke (8B, 1 rank)" /opt/rocm/bin/all_reduce_perf -b 8 -e 8 -g 1
   fi
 fi
 

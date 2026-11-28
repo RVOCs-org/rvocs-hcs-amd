@@ -7,3 +7,4 @@
 1005-add-therock-amdsmi-deferred-cmake-amdsmi-deferred.patch
 1006-pins-amd-llvm-1-ompt-riscv64-weak-fallbacks-fix-9.patch
 1007-compiler-enable-nvptx-llvm-target-bump-rocm-librar.patch
+1008-skip-gfx1200-single-arch-gfx1201.patch

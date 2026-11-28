@@ -203,7 +203,7 @@ fi
 # ---------------------------------------------------------------------------
 # configure
 # ---------------------------------------------------------------------------
-# Keep the build hermetic: a host ROCm install (e.g. /opt/rocm -> rocm7.1.1)
+# Keep the build hermetic: a host ROCm install (e.g. /opt/rocm -> rocm7.14.0)
 # leaks into sub-projects through find_package(OpenMP) ->
 #   CMakeCache: OpenMP_DIR=/opt/rocm/lib/cmake/openmp
 #   compile:    -isystem /opt/rocm/lib/clang/20/include
@@ -338,6 +338,58 @@ if [ "$DRY_RUN" != 1 ]; then
     [ "${n:-0}" -gt 0 ] || warn "no kpack for $GPU_TARGET, check whether THEROCK_AMDGPU_FAMILIES=$GPU_FAMILY is correct"
   else
     warn "$DIST_DIR/.kpack not found (older TheRock may inline device code in the .so files)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# rccl-tests (NCCL benchmark tools: all_reduce_perf, ...)
+# ---------------------------------------------------------------------------
+# Not part of the TheRock build graph: rccl is configured with BUILD_TESTS=OFF
+# and rocm-systems never adds the rccl-tests subproject, so the *_perf tools
+# are missing from the dist. Build them from the in-tree source project
+# against $DIST_DIR and install into it - 05-image.sh copies the dist tree
+# wholesale, so the tools ship in the images automatically.
+# ROCM_PATH must be explicit: rccl-tests' toolchain file and its
+# CMAKE_INSTALL_PREFIX both default to /opt/rocm (host install). GPU_TARGETS
+# must be pinned, otherwise the project compiles for every arch in its
+# DEFAULT_GPUS list (14 targets).
+if [ "${BUILD_RCCL_TESTS:-1}" = 1 ]; then
+  RCCL_TESTS_SRC="$SRC_TREE/rocm-systems/projects/rccl-tests"
+  RCCL_TESTS_BUILD="$THEROCK_BUILD/rccl-tests"
+  if [ ! -f "$RCCL_TESTS_SRC/CMakeLists.txt" ]; then
+    warn "rccl-tests sources not found: $RCCL_TESTS_SRC (skipping)"
+  elif [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] cmake -B %s -GNinja -S %s -DROCM_PATH=%s -DGPU_TARGETS=%s -DUSE_MPI=OFF\n' \
+      "$RCCL_TESTS_BUILD" "$RCCL_TESTS_SRC" "$DIST_DIR" "$GPU_TARGET"
+  else
+    log "building rccl-tests -> $DIST_DIR/bin (log: $LOG_DIR/rccl-tests.log)"
+    cmake -B "$RCCL_TESTS_BUILD" -GNinja -S "$RCCL_TESTS_SRC" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DROCM_PATH="$DIST_DIR" \
+      -DCMAKE_INSTALL_PREFIX="$DIST_DIR" \
+      -DCMAKE_INSTALL_RPATH="\$ORIGIN/../lib" \
+      -DGPU_TARGETS="$GPU_TARGET" \
+      -DUSE_MPI=OFF \
+      2>&1 | tee -a "$LOG_DIR/rccl-tests.log"
+    cmake --build "$RCCL_TESTS_BUILD" -j "$JOBS" 2>&1 | tee -a "$LOG_DIR/rccl-tests.log"
+    cmake --install "$RCCL_TESTS_BUILD" 2>&1 | tee -a "$LOG_DIR/rccl-tests.log"
+    # cmake's install-time RPATH rewrite leaves the host-absolute build path
+    # ($DIST_DIR/lib) in the binaries; rewrite to the portable $ORIGIN-relative
+    # form the rest of the dist tree uses, so the tools also run without
+    # LD_LIBRARY_PATH set (e.g. bare `docker exec ... /opt/rocm/bin/*_perf`).
+    if command -v patchelf >/dev/null 2>&1; then
+      for t in "$DIST_DIR"/bin/*_perf; do
+        patchelf --set-rpath '$ORIGIN/../lib' "$t" 2>>"$LOG_DIR/rccl-tests.log" || true
+      done
+    else
+      warn "patchelf not found: rccl-tests keep a host-absolute RUNPATH (image ENV LD_LIBRARY_PATH still resolves it)"
+    fi
+    n=$(find "$DIST_DIR/bin" -maxdepth 1 -type f -name '*_perf' | wc -l)
+    if [ "${n:-0}" -gt 0 ]; then
+      log "rccl-tests installed: $n perf tools in $DIST_DIR/bin"
+    else
+      warn "rccl-tests install produced no *_perf tools, check $LOG_DIR/rccl-tests.log"
+    fi
   fi
 fi
 
